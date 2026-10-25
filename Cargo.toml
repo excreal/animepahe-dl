@@ -1,0 +1,17 @@
+[package]
+name = "webkit-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gtk = "0.18"
+javascriptcore-rs = "1.1"
+serde_json = "1"
+scraper = "0.24"
+soup3 = "0.5"
+url = "2.5"
+webkit2gtk = { version = "2.0", features = ["v2_40"] }
+
+[[test]]
+name = "capture"
+harness = false

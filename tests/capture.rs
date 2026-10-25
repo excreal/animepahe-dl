@@ -1,0 +1,13 @@
+// WebKit must be initialized on the process main thread, not a libtest worker.
+#[allow(dead_code, unused_imports)]
+#[path = "../src/main.rs"]
+mod app;
+
+fn main() {
+    if !std::env::args().any(|arg| arg == "--ignored" || arg == "--include-ignored") {
+        println!("Capture GUI regression skipped; run with --ignored in a desktop session.");
+        return;
+    }
+    app::tests::captures_page_and_exits_without_shutdown_panic();
+    println!("Capture and shutdown regression passed.");
+}
