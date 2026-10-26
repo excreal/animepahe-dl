@@ -837,15 +837,33 @@ fn choose_source(html: &str, resolution: Option<&str>, language: Option<&str>) -
             .iter()
             .filter(|source| {
                 height.is_none_or(|h| source.1 == h)
-                    && audio.is_none_or(|a| source.2.eq_ignore_ascii_case(a))
+                    && audio.is_none_or(|a| {
+                        language_name(&source.2).eq_ignore_ascii_case(&language_name(a))
+                    })
             })
             .max_by_key(|source| source.1)
             .map(|source| source.0.clone())
     };
+    let auto_english = language.is_none()
+        && sources
+            .iter()
+            .any(|source| language_name(&source.2).eq_ignore_ascii_case("English"));
+    let preferred_language = language.or(auto_english.then_some("eng"));
     let selected = filtered(
         resolution.and_then(|r| r.trim_end_matches('p').parse().ok()),
-        language,
+        preferred_language,
     );
+    if auto_english {
+        return selected
+            .or_else(|| filtered(None, preferred_language))
+            .or_else(|| {
+                filtered(
+                    resolution.and_then(|r| r.trim_end_matches('p').parse().ok()),
+                    None,
+                )
+            })
+            .or_else(|| filtered(None, None));
+    }
     selected
         .or_else(|| {
             filtered(

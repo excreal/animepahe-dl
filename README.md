@@ -91,6 +91,9 @@ challenge pages there open WebKit and trigger one download retry. The `yt-dlp`
 handoff is a separate network client, so those dumps/logs provide its available
 diagnostics while curl requests retain the full raw trace and headers.
 
+When `-o` is omitted, the downloader prefers English audio when that episode
+offers it; otherwise it uses the existing resolution and source fallback.
+
 The downloader checks its required commands before making requests: curl,
 yt-dlp, Python with yt-dlp's AES support (`python-pycryptodomex`), ffmpeg, and
 ffprobe. It checks fzf when interactive selection is needed. Playlist-only
