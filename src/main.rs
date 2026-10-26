@@ -30,26 +30,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    if raw_args.is_empty()
+        || (raw_args.len() == 1 && matches!(raw_args[0].as_str(), "--help" | "-h"))
+    {
+        print_help();
+        return Ok(());
+    }
     let anime_mode = raw_args.first().is_some_and(|arg| arg == "animepahe")
         || raw_args.iter().any(|arg| {
             matches!(
                 arg.as_str(),
-                "-a" | "-s" | "-e" | "-r" | "-o" | "-l" | "-f" | "-d" | "--force"
+                "-a" | "-s"
+                    | "-e"
+                    | "-r"
+                    | "-o"
+                    | "-l"
+                    | "-f"
+                    | "-d"
+                    | "--name"
+                    | "--slug"
+                    | "--episodes"
+                    | "--resolution"
+                    | "--language"
+                    | "--force"
             )
         });
     if anime_mode {
         if raw_args.first().is_some_and(|arg| arg == "animepahe") {
             raw_args.remove(0);
         }
-        let mut session_dir = PathBuf::from(".session");
+        let mut session_dir = None;
         let mut capture_enabled = false;
         let mut filtered = Vec::new();
         let mut i = 0;
         while i < raw_args.len() {
             if raw_args[i] == "--session-dir" {
                 i += 1;
-                session_dir =
-                    PathBuf::from(raw_args.get(i).ok_or("--session-dir requires a path")?);
+                let path = raw_args
+                    .get(i)
+                    .filter(|path| !path.starts_with('-') && !path.trim().is_empty())
+                    .ok_or("--session-dir requires a path")?;
+                session_dir = Some(PathBuf::from(path));
             } else if raw_args[i] == "--capture" {
                 capture_enabled = true;
             } else {
@@ -57,6 +78,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             i += 1;
         }
+        if filtered
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+        {
+            animepahe::print_help();
+            return Ok(());
+        }
+        let session_dir = match session_dir {
+            Some(path) => path,
+            None => session::default_session_dir()?,
+        };
         let mut session = session::Session::open(&session_dir)?;
         let capture = capture::Capture::new(capture_enabled)?;
         if capture_enabled {
@@ -65,39 +97,53 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return animepahe::run(&filtered, capture, &mut session);
     }
     let mut args = raw_args.into_iter();
-    let mut url = "https://kwik.cx/f/7PJEkDIDi59b".to_owned();
-    let mut session_dir = PathBuf::from(".session");
+    let mut url = None;
+    let mut session_dir = None;
     let mut import = None;
     let mut import_only = false;
     let mut http_only = false;
     let mut capture_enabled = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--url" => url = args.next().ok_or("--url requires a URL")?,
+            "--url" => url = Some(next_cli_value(&mut args, "--url requires a URL")?),
             "--session-dir" => {
-                session_dir = PathBuf::from(args.next().ok_or("--session-dir requires a path")?)
+                session_dir = Some(PathBuf::from(next_cli_value(
+                    &mut args,
+                    "--session-dir requires a path",
+                )?))
             }
             "--import-session" => {
-                import = Some(PathBuf::from(
-                    args.next()
-                        .ok_or("--import-session requires a capture path")?,
-                ))
+                import = Some(PathBuf::from(next_cli_value(
+                    &mut args,
+                    "--import-session requires a capture path",
+                )?))
             }
             "--import-only" => import_only = true,
             "--http-only" => http_only = true,
             "--capture" => capture_enabled = true,
-            "--show-on-challenge" => {} // Compatibility: HTTP-first is now the default.
             "--help" | "-h" => {
-                println!("Usage: animepahe-dl [--url URL] [--session-dir PATH] [--http-only] [--capture] [--import-session CAPTURE --import-only]\nFetch over HTTP with saved cookies and user agent; open WebKit only when a challenge is detected. Use --capture to save diagnostic data.");
+                print_generic_help();
                 return Ok(());
             }
             _ => return Err(format!("Unknown argument: {arg}").into()),
         }
     }
-    let parsed = url::Url::parse(&url)?;
-    if !["http", "https"].contains(&parsed.scheme()) {
-        return Err("Only HTTP(S) URLs are supported".into());
+    if import_only && import.is_none() {
+        return Err("--import-only requires --import-session CAPTURE".into());
     }
+    if !import_only {
+        let provided_url = url
+            .as_deref()
+            .ok_or("No URL provided; specify --url URL or use the animepahe command")?;
+        let parsed = url::Url::parse(provided_url)?;
+        if !["http", "https"].contains(&parsed.scheme()) {
+            return Err("Only HTTP(S) URLs are supported".into());
+        }
+    }
+    let session_dir = match session_dir {
+        Some(path) => path,
+        None => session::default_session_dir()?,
+    };
     let mut session = session::Session::open(&session_dir)?;
     if let Some(path) = import {
         session.import_capture(&path)?;
@@ -107,6 +153,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("Reusable session saved in {}", session.dir.display());
         return Ok(());
     }
+    let url = url.ok_or("No URL provided; specify --url URL")?;
     let capture = capture::Capture::new(capture_enabled)?;
     if capture_enabled {
         println!("Capturing to {}", capture.dir.display());
@@ -196,6 +243,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+fn print_help() {
+    println!("animepahe-dl {}\n\nUsage:\n  animepahe-dl animepahe [OPTIONS]\n  animepahe-dl --url URL [OPTIONS]\n\nCommands:\n  animepahe       search, inspect, or download AnimePahe episodes\n  --url URL       inspect a page over HTTP; open WebKit only on a challenge\n\nRun `animepahe-dl animepahe --help` or `animepahe-dl --url URL --help` for options.\nRun `animepahe-dl --version` to print the version.", env!("CARGO_PKG_VERSION"));
+}
+
+fn print_generic_help() {
+    println!("Usage: animepahe-dl --url URL [--session-dir PATH] [--http-only] [--capture]\n       animepahe-dl --import-session CAPTURE --import-only [--session-dir PATH]\n\nFetch page details over HTTP with the saved session; open WebKit only when a challenge is detected. Captures are saved only with --capture.\nThe default session is stored in $XDG_CONFIG_HOME/animepahe-dl/session or ~/.config/animepahe-dl/session.");
+}
+
+fn next_cli_value(
+    args: &mut impl Iterator<Item = String>,
+    message: &'static str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    args.next()
+        .filter(|value| !value.starts_with('-') && !value.trim().is_empty())
+        .ok_or_else(|| message.into())
 }
 
 pub(crate) fn run_browser(

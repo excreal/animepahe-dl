@@ -16,7 +16,7 @@ use url::Url;
 use crate::{
     capture::Capture,
     http,
-    session::{private_write, Session},
+    session::{app_config_dir, private_write, Session},
 };
 
 const DEFAULT_HOST: &str = "https://animepahe.pw";
@@ -349,7 +349,7 @@ pub fn run(
         capture: capture.clone(),
         debug: options.debug,
     };
-    if let Ok(bytes) = fs::read("config.json") {
+    if let Ok(bytes) = fs::read(app_config_dir()?.join("config.json")) {
         let config: Value = serde_json::from_slice(&bytes)?;
         if let Some(ua) = config["ua"].as_str().filter(|ua| !ua.trim().is_empty()) {
             network.session.set_user_agent(ua)?;
@@ -408,7 +408,7 @@ pub fn run(
                 .find(|item| item.0 == slug)
                 .ok_or("Anime slug not found in anime.list")?
         } else {
-            choose_anime(&choices, None)?
+            choose_anime(&choices)?
         }
     };
     let anime_name = safe_name(&catalogue.1);
@@ -478,6 +478,20 @@ fn parse_args(args: &[String]) -> Result<Options, Box<dyn std::error::Error>> {
         }
         i += 1;
     }
+    if output.name.is_some() && output.slug.is_some() {
+        return Err("Use either --name or --slug, not both".into());
+    }
+    if let Some(resolution) = output.resolution.as_deref() {
+        if !resolution
+            .trim_end_matches('p')
+            .parse::<u32>()
+            .is_ok_and(|height| height > 0)
+        {
+            return Err(
+                format!("Invalid resolution: {resolution}; use a height such as 1080").into(),
+            );
+        }
+    }
     Ok(output)
 }
 
@@ -489,12 +503,12 @@ fn next(
     *i += 1;
     args.get(*i)
         .cloned()
-        .filter(|x| !x.starts_with('-'))
+        .filter(|x| !x.starts_with('-') && !x.trim().is_empty())
         .ok_or_else(|| format!("{option} requires a value").into())
 }
 
-fn print_help() {
-    println!("AnimePahe downloader\n\nUsage: cargo run -- animepahe [--capture] [-a name | -s slug] [-e 1,3-5,*] [-r 1080] [-o eng] [-l] [-f] [-d]\n\n --capture     save request and browser diagnostics under captures/\n -a NAME       search anime title\n -s SLUG       select an anime session/slug\n -e EPISODES   comma-separated episode numbers, ranges, or *\n -r HEIGHT     requested resolution, default 1080p\n -o LANGUAGE   audio language\n -l            print playlist URL without downloading\n -f, --force   replace existing episode files\n -d            log request URLs and statuses\n -h, --help    show this help\n\nThe animepahe-dl.sh options are also accepted directly, e.g. cargo run -- -a title.");
+pub(crate) fn print_help() {
+    println!("AnimePahe downloader\n\nUsage: animepahe-dl animepahe [--capture] [-a NAME | -s SLUG] [-e EPISODES] [-r HEIGHT] [-o LANGUAGE] [-l] [--force]\n\n --capture              save request and browser diagnostics under captures/\n -a, --name NAME        search anime title\n -s, --slug SLUG        select an anime session/slug\n -e, --episodes RANGE   comma-separated episode numbers, ranges, or *\n -r, --resolution HEIGHT requested resolution, default 1080p\n -o, --language CODE    audio language; defaults to English when available\n -l                     print playlist URL without downloading\n -f, --force            replace existing episode files\n -d                     log request URLs and statuses\n -h, --help             show this help\n\nAnime options can also be used directly, e.g. animepahe-dl -a title.");
 }
 
 fn check_dependencies(options: &Options) -> Result<(), Box<dyn std::error::Error>> {
@@ -589,7 +603,7 @@ fn fetch_catalogue(
 }
 
 fn read_catalogue(path: &Path) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
-    fs::read_to_string(path)?
+    Ok(fs::read_to_string(path)?
         .lines()
         .filter_map(|line| {
             let close = line.find("] ")?;
@@ -598,28 +612,12 @@ fn read_catalogue(path: &Path) -> Result<Vec<(String, String)>, Box<dyn std::err
                 line[close + 2..].trim().to_owned(),
             ))
         })
-        .collect::<Vec<_>>()
-        .pipe(Ok)
+        .collect::<Vec<_>>())
 }
-
-trait Pipe: Sized {
-    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
-        f(self)
-    }
-}
-impl<T> Pipe for T {}
 
 fn choose_anime(
     choices: &[(String, String)],
-    slug: Option<&str>,
 ) -> Result<(String, String), Box<dyn std::error::Error>> {
-    if let Some(slug) = slug {
-        return choices
-            .iter()
-            .find(|choice| choice.0 == slug)
-            .cloned()
-            .ok_or_else(|| format!("Anime slug not found: {slug}").into());
-    }
     let input = choices
         .iter()
         .map(|(slug, title)| format!("[{slug}] {title}"))
@@ -1149,6 +1147,7 @@ fn forward_output<R: io::Read + Send + 'static>(
 struct ProgressRenderer {
     terminal: bool,
     last_bucket: Option<u8>,
+    last_percent: f32,
     rendered: bool,
 }
 
@@ -1157,14 +1156,17 @@ impl ProgressRenderer {
         Self {
             terminal: io::stderr().is_terminal(),
             last_bucket: None,
+            last_percent: 0.0,
             rendered: false,
         }
     }
 
     fn render(&mut self, line: &str) {
-        let Some((percent, mut metrics)) = parse_progress(line) else {
+        let Some((reported_percent, mut metrics)) = parse_progress(line) else {
             return;
         };
+        let percent = reported_percent.max(self.last_percent);
+        self.last_percent = percent;
         if percent >= 100.0 {
             metrics = "download received; verifying/remuxing".to_owned();
         }
@@ -1196,17 +1198,38 @@ impl ProgressRenderer {
 fn parse_progress(line: &str) -> Option<(f32, String)> {
     let payload = line.split_once("[download]")?.1.trim_start();
     let (percentage, trailing) = payload.split_once('%')?;
-    let percent = percentage.split_whitespace().last()?.parse::<f32>().ok()?;
-    if !(0.0..=100.0).contains(&percent) {
+    let size_percent = percentage.split_whitespace().last()?.parse::<f32>().ok()?;
+    if !(0.0..=100.0).contains(&size_percent) {
         return None;
     }
     let trailing = trailing.trim();
+    let fragments = parse_fragment_counts(trailing);
+    let percent = fragments.map_or(size_percent, |(complete, total)| {
+        complete as f32 * 100.0 / total as f32
+    });
     let eta = trailing
         .find(" ETA ")
         .and_then(|index| trailing[index + 5..].split_whitespace().next())
         .map(|eta| format!("ETA {eta}"))
         .unwrap_or_default();
-    Some((percent, eta))
+    let fragment_label = fragments.map(|(complete, total)| format!("segments {complete}/{total}"));
+    let metrics = [fragment_label, (!eta.is_empty()).then_some(eta)]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some((percent, metrics))
+}
+
+fn parse_fragment_counts(text: &str) -> Option<(u64, u64)> {
+    let marker = text.find("frag ")? + "frag ".len();
+    let fraction = text[marker..]
+        .split(|character: char| !character.is_ascii_digit() && character != '/')
+        .next()?;
+    let (complete, total) = fraction.split_once('/')?;
+    let complete = complete.parse::<u64>().ok()?;
+    let total = total.parse::<u64>().ok()?;
+    (total > 0).then_some((complete.min(total), total))
 }
 
 fn hls_manifest_uses_aes(directory: &Path) -> io::Result<bool> {
@@ -1326,6 +1349,3 @@ fn safe_name(name: &str) -> String {
         cleaned
     }
 }
-
-#[allow(dead_code)]
-fn _capture_type(_: &Capture) {}

@@ -1,39 +1,34 @@
 # animepahe-dl
 
-HTTP-first page inspection and AnimePahe episode downloader with manual WebKit
-fallback for CAPTCHA challenges.
+AnimePahe episode downloader and HTTP-first page inspector with manual WebKit
+fallback for CAPTCHA challenges. Running `animepahe-dl` without arguments
+prints help and makes no network request.
 
-Fetch page details from any HTTP(S) URL using HTTP and a reusable session.
-Start WebKit only if the HTTP response contains a CAPTCHA/challenge. The
-original Kwik URL remains the default when `--url` is omitted.
+The generic page inspector requires an explicit URL. It fetches page details
+over HTTP and starts WebKit only if the response contains a CAPTCHA/challenge.
 
 ```sh
-cargo run
+cargo run -- --help
 ```
 
 ```sh
 cargo run -- --url https://idrama.dramafren.org/
 ```
 
-The previous command `cargo run -- --show-on-challenge` is still accepted and
-now uses this same HTTP-first flow. It no longer starts a hidden browser.
+Generic page inspection works as follows:
 
-The fixed executable was tested live against `https://idrama.dramafren.org/`:
-HTTP 403 challenge → browser verification → loaded `IDRAMA Player - Watch Free
-Short Dramas` → automatic close → saved-session HTTP 200. Capture:
-`captures/1792938493406-296703/`. These requests were made by the application.
-
-The default flow:
-
-1. Load `.session/cookies.txt` and `.session/user-agent.txt`.
-2. Fetch over HTTP using curl. Save response HTML, raw headers, traffic trace,
-   and `page-details.json` with the title, file metadata, forms, and asset URLs.
+1. Load `~/.config/animepahe-dl/session/cookies.txt` and
+   `~/.config/animepahe-dl/session/user-agent.txt`.
+2. Fetch over HTTP using curl. With `--capture`, save response HTML, raw
+   headers, traffic trace, and `page-details.json`. Otherwise, temporary
+   request data is removed when the command exits.
 3. On a normal response, exit without initializing GTK or creating WebKit.
 4. On a detected challenge, initialize GTK, restore the browser profile/cookies
    and the same user agent, and show the browser for you to solve it manually.
 5. Wait for a complete HTTP(S) document with no detected CAPTCHA and a successful
-   HTTP response for two consecutive checks, capture it, export updated cookies,
-   close the browser, and check whether the session also works over HTTP.
+   HTTP response for two consecutive checks, save requested diagnostics, export
+   updated cookies, close the browser, and check whether the session also works
+   over HTTP.
 
 An ordinary HTTP error or DNS failure is saved and reported without opening a
 browser. A challenge is detected by `cf-mitigated: challenge`, a challenge title,
@@ -71,10 +66,12 @@ cargo run -- animepahe -a "Anime title" -e 1 --capture
 
 Existing episode files are skipped; `--force` replaces them.
 
-It uses `.session/user-agent.txt` and `.session/cookies.txt` for curl requests,
-including search, catalogue, episode, play, and Kwik player pages. An optional
-legacy `config.json` with `ua` and `cf` values seeds the saved user agent and
-`cf_clearance` cookie. Each curl request saves request/response traces, raw
+It uses `~/.config/animepahe-dl/session/user-agent.txt` and
+`~/.config/animepahe-dl/session/cookies.txt` for curl requests, including
+search, catalogue, episode, play, and Kwik player pages. An optional
+`~/.config/animepahe-dl/config.json` with `ua` and `cf` values seeds the saved
+user agent and `cf_clearance` cookie. Existing project-local `.session/` and
+`config.json` files are migrated on first run. Each curl request saves traces, raw
 headers, status metadata, and the response body under
 `captures/<run>/animepahe/requests/`. Detected CAPTCHA responses open WebKit for
 manual completion, import the updated session, and retry the request.
@@ -102,8 +99,8 @@ dependency with `sudo pacman -S python-pycryptodomex`.
 
 ## Reusable session
 
-Your successful capture `captures/1792936784425-255142` was imported into
-`.session/`. Future runs reuse it automatically. This folder contains:
+The reusable session is stored in `~/.config/animepahe-dl/session/`. Future
+runs reuse it automatically. This folder contains:
 
 - `cookies.txt`: shared Netscape cookie jar, including HTTP-only and session cookies.
 - `user-agent.txt`: the exact user agent recorded by the browser.
@@ -116,7 +113,8 @@ Refreshing cookies for one site preserves saved cookies for other sites and
 unvisited paths. Cookies remain scoped to their domains when curl/WebKit send them.
 
 The session directory has permissions `700`, newly written cookie/agent files
-have permissions `600`, and `.session/` is excluded from Git. Cookies are
+have permissions `600`, and the legacy project-local `.session/` is excluded
+from Git. Cookies are
 imported into WebKit before navigation. Refreshed browser cookies, including
 session cookies, are exported for the next HTTP request. Browser local storage
 uses the persistent profile; per-tab sessionStorage remains per-tab.
@@ -137,10 +135,10 @@ cargo run -- --import-session captures/<run> --import-only
 
 ```sh
 # Never launch a browser; return an error when challenged.
-cargo run -- --http-only
+cargo run -- --url https://example.org/ --http-only
 
 # Use a separate cookie/profile directory.
-cargo run -- --session-dir /tmp/kwik-test-session
+cargo run -- --url https://example.org/ --session-dir /tmp/animepahe-session
 
 # Fetch a different site using the same generic detection.
 cargo run -- --url https://idrama.dramafren.org/

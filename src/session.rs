@@ -28,6 +28,58 @@ impl Session {
     }
 }
 
+pub fn app_config_dir() -> io::Result<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
+    Ok(base.join("animepahe-dl"))
+}
+
+pub fn default_session_dir() -> io::Result<PathBuf> {
+    let app_dir = app_config_dir()?;
+    let session_dir = app_dir.join("session");
+    migrate_legacy_state(&app_dir, &session_dir)?;
+    Ok(session_dir)
+}
+
+fn migrate_legacy_state(app_dir: &Path, session_dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(app_dir)?;
+    fs::set_permissions(app_dir, fs::Permissions::from_mode(0o700))?;
+    let legacy_session = PathBuf::from(".session");
+    if legacy_session.is_dir() && !session_dir.exists() {
+        match fs::rename(&legacy_session, session_dir) {
+            Ok(()) => {}
+            Err(_) => copy_session_dir(&legacy_session, session_dir)?,
+        }
+    }
+
+    let legacy_config = PathBuf::from("config.json");
+    let config_file = app_dir.join("config.json");
+    if legacy_config.is_file() && !config_file.exists() {
+        let contents = fs::read(&legacy_config)?;
+        private_write(&config_file, &contents)?;
+        fs::remove_file(legacy_config)?;
+    }
+    Ok(())
+}
+
+fn copy_session_dir(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let target = destination.join(entry.file_name());
+        if kind.is_dir() {
+            copy_session_dir(&entry.path(), &target)?;
+        } else if kind.is_file() && entry.file_name() != "lock" {
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
 impl Session {
     pub fn open(path: &Path) -> io::Result<Self> {
         fs::create_dir_all(path)?;
