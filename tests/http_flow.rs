@@ -40,7 +40,7 @@ fn cli_fetches_and_reuses_session_without_a_browser() {
         requests
     });
     for index in 0..3 {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_webkit-test"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_animepahe-dl"));
         command
             .current_dir(&root)
             .env_remove("DISPLAY")

@@ -1,3 +1,10 @@
 /target/
 /captures/
 /.session/
+/anime.list
+/config.json
+/dist/
+/*/
+!/src/
+!/tests/
+!/.forgejo/

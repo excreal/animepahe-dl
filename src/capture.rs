@@ -35,7 +35,7 @@ impl Capture {
         }))
     }
 
-    fn id(&self) -> u64 {
+    pub fn id(&self) -> u64 {
         let id = self.sequence.get() + 1;
         self.sequence.set(id);
         id
@@ -51,7 +51,7 @@ impl Capture {
         }
     }
 
-    fn write(&self, name: &str, data: &[u8]) {
+    pub fn write(&self, name: &str, data: &[u8]) {
         if let Err(error) = fs::write(self.dir.join(name), data) {
             self.event(
                 "write_error",

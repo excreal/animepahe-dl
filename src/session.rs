@@ -18,6 +18,17 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn set_user_agent(&mut self, value: &str) -> io::Result<()> {
+        if value.trim().is_empty() || value.contains(['\r', '\n']) {
+            return Err(io::Error::other("Invalid user agent"));
+        }
+        private_write(&self.dir.join("user-agent.txt"), value.as_bytes())?;
+        self.user_agent = value.to_owned();
+        Ok(())
+    }
+}
+
+impl Session {
     pub fn open(path: &Path) -> io::Result<Self> {
         fs::create_dir_all(path)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
@@ -125,7 +136,7 @@ impl Session {
                 }
             }
         }
-        let mut jar = String::from("# Netscape HTTP Cookie File\n# Saved by webkit-test, including session and HTTP-only cookies\n");
+        let mut jar = String::from("# Netscape HTTP Cookie File\n# Saved by animepahe-dl, including session and HTTP-only cookies\n");
         for ((domain, path, name), value) in cookies {
             let expires = value["expires_unix"].as_i64().unwrap_or(0);
             if domain.is_empty() || name.is_empty() || (expires > 0 && expires <= now()) {

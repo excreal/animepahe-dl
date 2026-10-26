@@ -1,0 +1,144 @@
+name: Release
+
+# Builds the animepahe-dl Rust CLI for Linux x64 and publishes the archive and
+# checksums to a Forgejo release.
+#
+#   git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+#
+# Or run this workflow manually with an existing tag name.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BINARY: animepahe-dl
+
+jobs:
+  release:
+    name: Build, test and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: https://github.com/actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          set -eu
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl jq pkg-config tar git \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev
+
+      - name: Verify tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -eu
+          tag="${INPUT_TAG:-}"
+          if [ -z "$tag" ]; then tag="${GITHUB_REF_NAME:-}"; fi
+          if [ -z "$tag" ]; then tag="${GITHUB_REF#refs/tags/}"; fi
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "Expected a v-prefixed semver tag, got '$tag'" >&2; exit 1 ;;
+          esac
+          version="${tag#v}"
+          printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$' || {
+            echo "Invalid release version: $version" >&2
+            exit 1
+          }
+          manifest_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test "$version" = "$manifest_version" || {
+            echo "Tag version $version does not match Cargo.toml version $manifest_version" >&2
+            exit 1
+          }
+          echo "Releasing $tag (version $version)"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Check out release tag
+        run: |
+          set -eu
+          git check-ref-format "refs/tags/${TAG}"
+          git rev-parse --verify "refs/tags/${TAG}^{commit}"
+          git checkout --detach "refs/tags/${TAG}"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/${TAG}^{commit}")"
+
+      - name: Setup Rust
+        uses: https://github.com/dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Test and lint
+        run: |
+          set -eu
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+
+      - name: Build Linux x64 release
+        run: |
+          set -eu
+          cargo build --locked --release --target x86_64-unknown-linux-gnu
+          binary="target/x86_64-unknown-linux-gnu/release/${BINARY}"
+          test "$("$binary" --version)" = "$VERSION"
+          mkdir -p dist
+          cp "$binary" "dist/${BINARY}"
+          cp README.md dist/README.md
+          archive="${BINARY}_${VERSION}_linux_amd64.tar.gz"
+          tar -C dist -czf "dist/$archive" "$BINARY" README.md
+          (cd dist && sha256sum "$archive" > checksums.txt)
+
+      - name: Publish release
+        env:
+          TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          SERVER: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          if [ -z "${TOKEN:-}" ]; then
+            echo "No release token available." >&2
+            exit 1
+          fi
+          api="${SERVER}/api/v1/repos/${REPO}"
+          auth="Authorization: token ${TOKEN}"
+          prerelease=false
+          case "$VERSION" in *-*) prerelease=true ;; esac
+          id="$(curl -fsS -H "$auth" "${api}/releases/tags/${TAG}" 2>/dev/null | jq -r '.id // empty' || true)"
+          if [ -z "$id" ]; then
+            body="$(printf 'Automated release of %s.\n\nSee checksums.txt for SHA-256 sums.\n' "$TAG")"
+            payload="$(jq -n --arg tag "$TAG" --arg name "$TAG" --arg body "$body" --argjson pre "$prerelease" \
+              '{tag_name:$tag,name:$name,body:$body,draft:false,prerelease:$pre}')"
+            id="$(curl -fsS -X POST -H "$auth" -H 'Content-Type: application/json' \
+              --data "$payload" "${api}/releases" | jq -r '.id')"
+            echo "Created release ${TAG} (id ${id})"
+          else
+            echo "Reusing existing release ${TAG} (id ${id})"
+          fi
+          curl -fsS -H "$auth" "${api}/releases/${id}/assets?limit=100" \
+            | jq -r '.[].id' \
+            | while read -r asset_id; do
+                [ -n "$asset_id" ] && curl -fsS -X DELETE -H "$auth" "${api}/releases/assets/${asset_id}" || true
+              done
+          for file in dist/*; do
+            echo "Uploading $(basename "$file")"
+            curl -fsS -X POST -H "$auth" -F "attachment=@${file}" \
+              "${api}/releases/${id}/assets?name=$(basename "$file")" >/dev/null
+          done
+          echo "Published ${TAG}: ${SERVER}/${REPO}/releases/tag/${TAG}"

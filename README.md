@@ -1,4 +1,7 @@
-# HTTP-first page test with manual WebKit fallback
+# animepahe-dl
+
+HTTP-first page inspection and AnimePahe episode downloader with manual WebKit
+fallback for CAPTCHA challenges.
 
 Fetch page details from any HTTP(S) URL using HTTP and a reusable session.
 Start WebKit only if the HTTP response contains a CAPTCHA/challenge. The
@@ -45,6 +48,53 @@ are not downloaded or executed. The captured Kwik page supplies its file name,
 size, MIME type, media details, and hashes in HTML. JavaScript builds its download
 form, so that form may be absent from browser-free details. The output records
 whether JavaScript was executed.
+
+For an AnimePahe `/play/<anime-id>/<episode-id>` URL, the app also retrieves
+the series episode API pages and reads audio-language options from the play
+page's static source buttons. It prints the episode count, current episode,
+available languages, and whether English is listed, and stores them in the
+`animepahe` object in `page-details.json`.
+
+## AnimePahe downloader port
+
+The `animepahe-dl.sh` workflow is available as a Rust CLI. It supports title
+search or an anime slug, interactive `fzf` selection, episode lists and ranges,
+resolution/audio selection, playlist-only output, and yt-dlp downloads:
+
+```sh
+cargo run -- animepahe --help
+cargo run -- animepahe -a "Anime title" -e '1,3-5' -r 1080 -o eng
+cargo run -- -s anime-session-id -e '*' -l
+cargo run -- animepahe -s anime-session-id -e 1 --force
+```
+
+Existing episode files are skipped; `--force` replaces them.
+
+It uses `.session/user-agent.txt` and `.session/cookies.txt` for curl requests,
+including search, catalogue, episode, play, and Kwik player pages. An optional
+legacy `config.json` with `ua` and `cf` values seeds the saved user agent and
+`cf_clearance` cookie. Each curl request saves request/response traces, raw
+headers, status metadata, and the response body under
+`captures/<run>/animepahe/requests/`. Detected CAPTCHA responses open WebKit for
+manual completion, import the updated session, and retry the request.
+
+Playlist extraction preserves the shell script's `glot.io` JavaScript runner
+step. yt-dlp receives the saved cookies, Chrome impersonation (which supplies
+the matching Chrome user agent), and the Kwik referrer required by the media
+host. Its native HLS downloader carries those request settings to segments;
+ffmpeg only remuxes the downloaded local media. A live progress bar is parsed
+from yt-dlp's newline output. Its HTTP traffic log and
+`--write-pages` response
+dumps are saved under `captures/<run>/animepahe/yt-dlp/<episode>/`; detected
+challenge pages there open WebKit and trigger one download retry. The `yt-dlp`
+handoff is a separate network client, so those dumps/logs provide its available
+diagnostics while curl requests retain the full raw trace and headers.
+
+The downloader checks its required commands before making requests: curl,
+yt-dlp, Python with yt-dlp's AES support (`python-pycryptodomex`), ffmpeg, and
+ffprobe. It checks fzf when interactive selection is needed. Playlist-only
+mode skips the download-only dependencies. On Arch Linux, install the crypto
+dependency with `sudo pacman -S python-pycryptodomex`.
 
 ## Reusable session
 
@@ -122,7 +172,7 @@ build; a graphical desktop is needed only when a challenge opens WebKit.
 
 ```sh
 # Parsing, cookie/agent persistence, locking, and HTTP-first CLI without a display.
-cargo test --bin webkit-test --test http_flow
+cargo test --bin animepahe-dl --test http_flow
 
 # Desktop: browser cookie import/export, captures, and clean shutdown.
 cargo test --test capture -- --ignored

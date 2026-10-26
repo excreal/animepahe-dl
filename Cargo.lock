@@ -3,6 +3,19 @@
 version = 4
 
 [[package]]
+name = "animepahe-dl"
+version = "0.1.0"
+dependencies = [
+ "gtk",
+ "javascriptcore-rs",
+ "scraper",
+ "serde_json",
+ "soup3",
+ "url",
+ "webkit2gtk",
+]
+
+[[package]]
 name = "atk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1350,19 +1363,6 @@ dependencies = [
  "phf_codegen",
  "string_cache",
  "string_cache_codegen",
-]
-
-[[package]]
-name = "webkit-test"
-version = "0.1.0"
-dependencies = [
- "gtk",
- "javascriptcore-rs",
- "scraper",
- "serde_json",
- "soup3",
- "url",
- "webkit2gtk",
 ]
 
 [[package]]

@@ -1,3 +1,4 @@
+mod animepahe;
 mod capture;
 mod http;
 mod session;
@@ -6,7 +7,7 @@ use gtk::prelude::*;
 use javascriptcore::ValueExt;
 use serde_json::json;
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     path::PathBuf,
     rc::Rc,
     time::{Duration, Instant},
@@ -24,7 +25,41 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args().skip(1);
+    let mut raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if raw_args.len() == 1 && matches!(raw_args[0].as_str(), "--version" | "-V") {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    let anime_mode = raw_args.first().is_some_and(|arg| arg == "animepahe")
+        || raw_args.iter().any(|arg| {
+            matches!(
+                arg.as_str(),
+                "-a" | "-s" | "-e" | "-r" | "-o" | "-l" | "-f" | "-d" | "--force"
+            )
+        });
+    if anime_mode {
+        if raw_args.first().is_some_and(|arg| arg == "animepahe") {
+            raw_args.remove(0);
+        }
+        let mut session_dir = PathBuf::from(".session");
+        let mut filtered = Vec::new();
+        let mut i = 0;
+        while i < raw_args.len() {
+            if raw_args[i] == "--session-dir" {
+                i += 1;
+                session_dir =
+                    PathBuf::from(raw_args.get(i).ok_or("--session-dir requires a path")?);
+            } else {
+                filtered.push(raw_args[i].clone());
+            }
+            i += 1;
+        }
+        let mut session = session::Session::open(&session_dir)?;
+        let capture = capture::Capture::new()?;
+        println!("AnimePahe capture: {}", capture.dir.display());
+        return animepahe::run(&filtered, capture, &mut session);
+    }
+    let mut args = raw_args.into_iter();
     let mut url = "https://kwik.cx/f/7PJEkDIDi59b".to_owned();
     let mut session_dir = PathBuf::from(".session");
     let mut import = None;
@@ -46,7 +81,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--http-only" => http_only = true,
             "--show-on-challenge" => {} // Compatibility: HTTP-first is now the default.
             "--help" | "-h" => {
-                println!("Usage: cargo run -- [--url URL] [--session-dir PATH] [--http-only] [--import-session CAPTURE --import-only]\nFetch over HTTP with saved cookies and user agent; open WebKit only when a challenge is detected.");
+                println!("Usage: animepahe-dl [--url URL] [--session-dir PATH] [--http-only] [--import-session CAPTURE --import-only]\nFetch over HTTP with saved cookies and user agent; open WebKit only when a challenge is detected.");
                 return Ok(());
             }
             _ => return Err(format!("Unknown argument: {arg}").into()),
@@ -67,8 +102,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let capture = capture::Capture::new()?;
     println!("Capturing to {}", capture.dir.display());
-    println!("Fetching over HTTP using session {}", session.dir.display());
-    let page = http::fetch(&url, &capture, &session, "http")?;
+    println!("Fetching {url} using the saved session");
+    let mut page = http::fetch(&url, &capture, &session, "http")?;
     if !page.challenge {
         if !(200..300).contains(&page.status) {
             return Err(format!(
@@ -77,6 +112,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )
             .into());
         }
+        animepahe::enrich_play_page(
+            &url,
+            "http",
+            capture.clone(),
+            &mut session,
+            &mut page.details,
+        )?;
+        println!(
+            "Page: {} (HTTP {})",
+            page.details["title"].as_str().unwrap_or("Untitled"),
+            page.status
+        );
         capture.event("exit", json!({"mode":"http","browser_started":false}));
         println!(
             "Page details saved to {}. No browser started.",
@@ -107,7 +154,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     // Check whether this browser session is also accepted by the HTTP client.
     match http::fetch(&url, &capture, &session, "http-after-browser") {
-        Ok(page) if !page.challenge && (200..300).contains(&page.status) => {
+        Ok(mut page) if !page.challenge && (200..300).contains(&page.status) => {
+            animepahe::enrich_play_page(
+                &url,
+                "http-after-browser",
+                capture.clone(),
+                &mut session,
+                &mut page.details,
+            )?;
             println!("Saved session works over HTTP; future runs will try it first.")
         }
         Ok(_) => {
@@ -122,7 +176,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_browser(
+pub(crate) fn run_browser(
     capture: Rc<capture::Capture>,
     session: &session::Session,
     url: &str,
@@ -131,7 +185,9 @@ fn run_browser(
     let finishing = Rc::new(Cell::new(false));
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
     window.set_title("Page — solve the CAPTCHA manually");
-    window.set_default_size(1024, 768);
+    window.set_default_size(960, 680);
+    window.set_position(gtk::WindowPosition::Center);
+    window.unmaximize();
     let webview = session.browser()?;
     capture.attach(&webview);
     let ready_checks = Rc::new(Cell::new(0));
@@ -143,7 +199,6 @@ fn run_browser(
         if event == LoadEvent::Started { load_checks.set(0); }
         if event == LoadEvent::Finished {
             let title = view.title().unwrap_or_else(|| "Untitled".into());
-            println!("Loaded: {} ({title})", view.uri().unwrap_or_default());
             load_capture.snapshot(view, "loaded");
             if let Some(window) = weak_window.upgrade() { window.set_title(&format!("{title} — WebKit test")); }
         }
@@ -169,6 +224,7 @@ fn run_browser(
     let close_finishing = finishing.clone();
     let close_loop = main_loop.clone();
     let weak_view = webview.downgrade();
+    let weak_window = window.downgrade();
     window.connect_delete_event(move |_, _| {
         if let Some(view) = weak_view.upgrade() {
             finish(
@@ -179,6 +235,9 @@ fn run_browser(
                 "window_closed",
             );
         }
+        if let Some(window) = weak_window.upgrade() {
+            window.hide();
+        }
         gtk::glib::Propagation::Stop
     });
     let checking = Rc::new(Cell::new(false));
@@ -188,7 +247,6 @@ fn run_browser(
     let poll_finishing = finishing.clone();
     let completed = Rc::new(Cell::new(false));
     let poll_completed = completed.clone();
-    let last_state = Rc::new(RefCell::new(String::new()));
     let poll = gtk::glib::timeout_add_local(Duration::from_secs(1), move || {
         let Some(view) = weak_view.upgrade() else {
             return gtk::glib::ControlFlow::Continue;
@@ -205,7 +263,6 @@ fn run_browser(
             let main_loop = poll_loop.clone();
             let weak_view = view.downgrade();
             let completed = poll_completed.clone();
-            let last_state = last_state.clone();
             let script = format!(
                 "{}; JSON.stringify(window.__webkitPageState)",
                 include_str!("page_ready.js")
@@ -226,11 +283,6 @@ fn run_browser(
                     let mut mitigated = false;
                     if let Some(headers) = response.and_then(|r|r.http_headers()) {
                         headers.foreach(|name,value| {if name.eq_ignore_ascii_case("cf-mitigated") && value.eq_ignore_ascii_case("challenge") {mitigated=true;}});
-                    }
-                    let current = state["state"].as_str().unwrap_or("unknown");
-                    if *last_state.borrow() != current {
-                        println!("Page state: {current} — {}", state["reason"].as_str().unwrap_or(""));
-                        *last_state.borrow_mut() = current.to_owned();
                     }
                     let ready = state["ready"] == true && status.is_some_and(|status|(200..300).contains(&status)) && !mitigated && !view.is_loading();
                     capture.event(
@@ -261,6 +313,8 @@ fn run_browser(
     poll.remove();
     webview.terminate_web_process();
     window.hide();
+    // The GTK loop has stopped and this function owns the top-level window.
+    unsafe { window.destroy() };
     capture.event("exit", json!({"pending":capture.pending.get()}));
     println!("Capture saved to {}", capture.dir.display());
     Ok(completed.get())

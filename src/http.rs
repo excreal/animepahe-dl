@@ -110,14 +110,10 @@ pub fn fetch(url: &str, capture: &Capture, session: &Session, label: &str) -> io
         serde_json::to_string_pretty(&page.details)?.as_bytes(),
     )?;
     capture.event("http_result",json!({"directory":label,"url":final_url,"status":status,"challenge":page.challenge,"title":page.details["title"],"body_bytes":body.len()}));
-    println!(
-        "HTTP {status}: {}",
-        page.details["title"].as_str().unwrap_or("Untitled")
-    );
     Ok(page)
 }
 
-fn final_headers(raw: &str) -> Vec<(String, String)> {
+pub(crate) fn final_headers(raw: &str) -> Vec<(String, String)> {
     let normalized = raw.replace("\r\n", "\n");
     normalized
         .rsplit("\n\n")
@@ -132,11 +128,20 @@ fn final_headers(raw: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+pub(crate) fn challenge_header_present(raw: &str) -> bool {
+    raw.lines()
+        .filter_map(|line| line.split_once(':'))
+        .any(|(name, value)| {
+            name.eq_ignore_ascii_case("cf-mitigated")
+                && value.trim().eq_ignore_ascii_case("challenge")
+        })
+}
+
 fn selector(value: &str) -> Selector {
     Selector::parse(value).expect("Static HTML selector")
 }
 
-fn inspect(url: &str, status: u16, headers: &[(String, String)], body: &str) -> Page {
+pub(crate) fn inspect(url: &str, status: u16, headers: &[(String, String)], body: &str) -> Page {
     let html = Html::parse_document(body);
     let title = html
         .select(&selector("title"))

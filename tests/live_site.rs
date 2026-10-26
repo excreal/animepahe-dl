@@ -1,7 +1,7 @@
 #[test]
 #[ignore = "live network test; invokes the fixed application against idrama.dramafren.org"]
 fn fixed_application_handles_another_site() {
-    let result = std::process::Command::new(env!("CARGO_BIN_EXE_webkit-test"))
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_animepahe-dl"))
         .args(["--url", "https://idrama.dramafren.org/", "--http-only"])
         .output()
         .expect("Could not start the fixed application");
@@ -26,7 +26,7 @@ fn fixed_application_handles_another_site() {
 #[ignore = "live manual CAPTCHA test; opens the fixed application's WebKit window when challenged"]
 fn manual_challenge_flow_on_another_site() {
     println!("Starting the fixed application; manual verification may be required in its window.");
-    let status = std::process::Command::new(env!("CARGO_BIN_EXE_webkit-test"))
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_animepahe-dl"))
         .args(["--url", "https://idrama.dramafren.org/"])
         .status()
         .expect("Could not start the fixed application");
