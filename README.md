@@ -66,6 +66,7 @@ cargo run -- animepahe --help
 cargo run -- animepahe -a "Anime title" -e '1,3-5' -r 1080 -o eng
 cargo run -- -s anime-session-id -e '*' -l
 cargo run -- animepahe -s anime-session-id -e 1 --force
+cargo run -- animepahe -a "Anime title" -e 1 --capture
 ```
 
 Existing episode files are skipped; `--force` replaces them.
@@ -144,7 +145,10 @@ cargo run -- --url https://idrama.dramafren.org/
 
 ## Captures
 
-Each run prints its folder, `captures/<timestamp>-<pid>/`.
+Captures are disabled by default. Add `--capture` to a page fetch or downloader
+command to save request and browser diagnostics in
+`captures/<timestamp>-<pid>/`. Without it, temporary request data is removed at
+the end of the run.
 
 - `page-details.json`: latest successful static details, or rendered browser
   details if HTTP reuse is still challenged after manual verification.

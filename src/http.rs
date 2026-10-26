@@ -347,7 +347,7 @@ mod tests {
             write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nSet-Cookie: renewed=yes; Path=/; HttpOnly\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
             request
         });
-        let capture = Capture::new().unwrap();
+        let capture = Capture::new(true).unwrap();
         let page = fetch(
             &format!("http://{address}/"),
             &capture,

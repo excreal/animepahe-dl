@@ -194,11 +194,12 @@ impl Network<'_> {
                 return Ok(response);
             }
             if attempt > 0 {
-                return Err(format!(
-                    "CAPTCHA persisted at {url} after manual verification; response saved in {}",
-                    self.capture.dir.display()
-                )
-                .into());
+                let message = if self.capture.persistent() {
+                    format!("CAPTCHA persisted at {url} after manual verification; response saved in {}", self.capture.dir.display())
+                } else {
+                    format!("CAPTCHA persisted at {url} after manual verification; rerun with --capture to save diagnostics")
+                };
+                return Err(message.into());
             }
             eprintln!("CAPTCHA detected during {method} request to {url}; opening the page for manual verification.");
             self.solve_challenge(url)?;
@@ -492,7 +493,7 @@ fn next(
 }
 
 fn print_help() {
-    println!("AnimePahe downloader\n\nUsage: cargo run -- animepahe [-a name | -s slug] [-e 1,3-5,*] [-r 1080] [-o eng] [-l] [-f] [-d]\n\n -a NAME       search anime title\n -s SLUG       select an anime session/slug\n -e EPISODES   comma-separated episode numbers, ranges, or *\n -r HEIGHT     requested resolution, default 1080p\n -o LANGUAGE   audio language\n -l            print playlist URL without downloading\n -f, --force   replace existing episode files\n -d            log request URLs and statuses\n -h, --help    show this help\n\nThe animepahe-dl.sh options are also accepted directly, e.g. cargo run -- -a title.");
+    println!("AnimePahe downloader\n\nUsage: cargo run -- animepahe [--capture] [-a name | -s slug] [-e 1,3-5,*] [-r 1080] [-o eng] [-l] [-f] [-d]\n\n --capture     save request and browser diagnostics under captures/\n -a NAME       search anime title\n -s SLUG       select an anime session/slug\n -e EPISODES   comma-separated episode numbers, ranges, or *\n -r HEIGHT     requested resolution, default 1080p\n -o LANGUAGE   audio language\n -l            print playlist URL without downloading\n -f, --force   replace existing episode files\n -d            log request URLs and statuses\n -h, --help    show this help\n\nThe animepahe-dl.sh options are also accepted directly, e.g. cargo run -- -a title.");
 }
 
 fn check_dependencies(options: &Options) -> Result<(), Box<dyn std::error::Error>> {

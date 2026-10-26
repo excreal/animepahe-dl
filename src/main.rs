@@ -42,6 +42,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             raw_args.remove(0);
         }
         let mut session_dir = PathBuf::from(".session");
+        let mut capture_enabled = false;
         let mut filtered = Vec::new();
         let mut i = 0;
         while i < raw_args.len() {
@@ -49,14 +50,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 i += 1;
                 session_dir =
                     PathBuf::from(raw_args.get(i).ok_or("--session-dir requires a path")?);
+            } else if raw_args[i] == "--capture" {
+                capture_enabled = true;
             } else {
                 filtered.push(raw_args[i].clone());
             }
             i += 1;
         }
         let mut session = session::Session::open(&session_dir)?;
-        let capture = capture::Capture::new()?;
-        println!("AnimePahe capture: {}", capture.dir.display());
+        let capture = capture::Capture::new(capture_enabled)?;
+        if capture_enabled {
+            println!("Capture: {}", capture.dir.display());
+        }
         return animepahe::run(&filtered, capture, &mut session);
     }
     let mut args = raw_args.into_iter();
@@ -65,6 +70,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut import = None;
     let mut import_only = false;
     let mut http_only = false;
+    let mut capture_enabled = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--url" => url = args.next().ok_or("--url requires a URL")?,
@@ -79,9 +85,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--import-only" => import_only = true,
             "--http-only" => http_only = true,
+            "--capture" => capture_enabled = true,
             "--show-on-challenge" => {} // Compatibility: HTTP-first is now the default.
             "--help" | "-h" => {
-                println!("Usage: animepahe-dl [--url URL] [--session-dir PATH] [--http-only] [--import-session CAPTURE --import-only]\nFetch over HTTP with saved cookies and user agent; open WebKit only when a challenge is detected.");
+                println!("Usage: animepahe-dl [--url URL] [--session-dir PATH] [--http-only] [--capture] [--import-session CAPTURE --import-only]\nFetch over HTTP with saved cookies and user agent; open WebKit only when a challenge is detected. Use --capture to save diagnostic data.");
                 return Ok(());
             }
             _ => return Err(format!("Unknown argument: {arg}").into()),
@@ -100,17 +107,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("Reusable session saved in {}", session.dir.display());
         return Ok(());
     }
-    let capture = capture::Capture::new()?;
-    println!("Capturing to {}", capture.dir.display());
+    let capture = capture::Capture::new(capture_enabled)?;
+    if capture_enabled {
+        println!("Capturing to {}", capture.dir.display());
+    }
     println!("Fetching {url} using the saved session");
     let mut page = http::fetch(&url, &capture, &session, "http")?;
     if !page.challenge {
         if !(200..300).contains(&page.status) {
-            return Err(format!(
-                "HTTP {} without a CAPTCHA; response saved, browser not started",
-                page.status
-            )
-            .into());
+            let message = if capture_enabled {
+                format!(
+                    "HTTP {} without a CAPTCHA; response saved to {}",
+                    page.status,
+                    capture.dir.display()
+                )
+            } else {
+                format!(
+                    "HTTP {} without a CAPTCHA; rerun with --capture to save diagnostics",
+                    page.status
+                )
+            };
+            return Err(message.into());
         }
         animepahe::enrich_play_page(
             &url,
@@ -125,17 +142,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             page.status
         );
         capture.event("exit", json!({"mode":"http","browser_started":false}));
-        println!(
-            "Page details saved to {}. No browser started.",
-            capture.dir.join("page-details.json").display()
-        );
+        if capture_enabled {
+            println!(
+                "Page details saved to {}. No browser started.",
+                capture.dir.join("page-details.json").display()
+            );
+        }
         return Ok(());
     }
     if http_only {
-        return Err(
-            "CAPTCHA detected; --http-only prevented the browser from starting. Captures saved."
-                .into(),
-        );
+        return Err("CAPTCHA detected; --http-only prevented the browser from starting.".into());
     }
     println!("CAPTCHA detected. Opening WebKit for manual verification.");
     gtk::init().map_err(|error| {
@@ -143,9 +159,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     let completed = run_browser(capture.clone(), &session, &url)?;
     if !completed {
-        return Err(
-            "Browser closed or stopped before destination completion. Captures saved.".into(),
-        );
+        let message = if capture_enabled {
+            format!(
+                "Browser closed or stopped before destination completion. Capture saved to {}",
+                capture.dir.display()
+            )
+        } else {
+            "Browser closed or stopped before destination completion. Rerun with --capture to save diagnostics.".to_owned()
+        };
+        return Err(message.into());
     }
     session.import_capture(&capture.dir)?;
     println!(
@@ -200,7 +222,7 @@ pub(crate) fn run_browser(
         if event == LoadEvent::Finished {
             let title = view.title().unwrap_or_else(|| "Untitled".into());
             load_capture.snapshot(view, "loaded");
-            if let Some(window) = weak_window.upgrade() { window.set_title(&format!("{title} — WebKit test")); }
+            if let Some(window) = weak_window.upgrade() { window.set_title(&format!("{title} — animepahe-dl")); }
         }
     });
     let error_capture = capture.clone();
@@ -280,16 +302,20 @@ pub(crate) fn run_browser(
                     let state: serde_json::Value = result.as_ref().ok().and_then(|value|serde_json::from_str(&value.to_str()).ok()).unwrap_or_else(||json!({"state":"unknown", "reason":"State inspection failed"}));
                     let response = view.main_resource().and_then(|r|r.response());
                     let status = response.as_ref().map(|r|r.status_code());
+                    let non_html = response.as_ref().and_then(|r|r.mime_type()).is_some_and(|mime| {
+                        let mime = mime.to_ascii_lowercase();
+                        !mime.starts_with("text/html") && !mime.starts_with("application/xhtml+xml")
+                    });
                     let mut mitigated = false;
                     if let Some(headers) = response.and_then(|r|r.http_headers()) {
                         headers.foreach(|name,value| {if name.eq_ignore_ascii_case("cf-mitigated") && value.eq_ignore_ascii_case("challenge") {mitigated=true;}});
                     }
-                    let ready = state["ready"] == true && status.is_some_and(|status|(200..300).contains(&status)) && !mitigated && !view.is_loading();
+                    let ready = (state["ready"] == true || non_html) && status.is_some_and(|status|(200..300).contains(&status)) && !mitigated && !view.is_loading();
                     capture.event(
                         "completion_check",
                         json!({"ready":ready, "state":state, "main_status":status, "cf_mitigated":mitigated, "error":result.err().map(|e|e.to_string())}),
                     );
-                    if state["ready"] == true && status.is_some_and(|status|status>=400) && !mitigated && !view.is_loading() {
+                    if (state["ready"] == true || non_html) && status.is_some_and(|status|status>=400) && !mitigated && !view.is_loading() {
                         eprintln!("Destination returned HTTP {} without a detected CAPTCHA.",status.unwrap_or_default());
                         finish(&view,&capture,&finishing,&main_loop,"http_error");
                         return;
@@ -297,7 +323,11 @@ pub(crate) fn run_browser(
                     ready_checks.set(if ready { ready_checks.get() + 1 } else { 0 });
                     if ready_checks.get() >= 2 {
                         completed.set(true);
-                        println!("Destination page finished loading. Saving captures and exiting.");
+                        if capture.persistent() {
+                            println!("Destination page finished loading. Saving captures and exiting.");
+                        } else {
+                            println!("Request completed. Closing browser.");
+                        }
                         finish(&view, &capture, &finishing, &main_loop, "complete");
                     }
                 },
@@ -316,7 +346,9 @@ pub(crate) fn run_browser(
     // The GTK loop has stopped and this function owns the top-level window.
     unsafe { window.destroy() };
     capture.event("exit", json!({"pending":capture.pending.get()}));
-    println!("Capture saved to {}", capture.dir.display());
+    if capture.persistent() {
+        println!("Capture saved to {}", capture.dir.display());
+    }
     Ok(completed.get())
 }
 
@@ -377,7 +409,7 @@ pub mod tests {
             }
             requests
         });
-        let capture = capture::Capture::new().unwrap();
+        let capture = capture::Capture::new(true).unwrap();
         let main_loop = gtk::glib::MainLoop::new(None, false);
         let finishing = Rc::new(Cell::new(false));
         let session = session::Session::open(&capture.dir.join("fixture-session")).unwrap();

@@ -15,6 +15,7 @@ use webkit2gtk::*;
 
 pub struct Capture {
     pub dir: PathBuf,
+    persistent: bool,
     events: RefCell<File>,
     sequence: Cell<u64>,
     pub pending: Cell<usize>,
@@ -22,17 +23,29 @@ pub struct Capture {
 }
 
 impl Capture {
-    pub fn new() -> std::io::Result<Rc<Self>> {
-        let dir = PathBuf::from(format!("captures/{}-{}", now(), std::process::id()));
+    pub fn new(persistent: bool) -> std::io::Result<Rc<Self>> {
+        let root = if persistent {
+            PathBuf::from("captures")
+        } else {
+            std::env::temp_dir().join("animepahe-dl-captures")
+        };
+        let dir = root.join(format!("{}-{}", now(), std::process::id()));
         fs::create_dir_all(dir.join("resources"))?;
+        set_private_dir(&root)?;
+        set_private_dir(&dir)?;
         let dir = fs::canonicalize(dir)?;
         Ok(Rc::new(Self {
             events: RefCell::new(File::create(dir.join("events.jsonl"))?),
             dir,
+            persistent,
             sequence: Cell::new(0),
             pending: Cell::new(0),
             cookie_uris: RefCell::new(BTreeSet::new()),
         }))
+    }
+
+    pub fn persistent(&self) -> bool {
+        self.persistent
     }
 
     pub fn id(&self) -> u64 {
@@ -62,6 +75,17 @@ impl Capture {
     }
 
     pub fn attach(self: &Rc<Self>, view: &WebView) {
+        if !self.persistent {
+            let capture = self.clone();
+            view.connect_resource_load_started(move |_, _, request| {
+                if let Some(uri) = request.uri() {
+                    if uri.starts_with("http://") || uri.starts_with("https://") {
+                        capture.cookie_uris.borrow_mut().insert(uri.to_string());
+                    }
+                }
+            });
+            return;
+        }
         if let Some(manager) = view.user_content_manager() {
             manager.add_script(&UserScript::new(
                 r#"window.__webkitCapture = [];
@@ -126,6 +150,9 @@ impl Capture {
     }
 
     pub fn snapshot(self: &Rc<Self>, view: &WebView, label: &str) {
+        if !self.persistent {
+            return;
+        }
         let id = self.id();
         let label = label.to_owned();
         self.pending.set(self.pending.get() + 1);
@@ -152,21 +179,23 @@ impl Capture {
     }
 
     pub fn finalize(self: &Rc<Self>, view: &WebView) {
-        self.snapshot(view, "final");
-        self.pending.set(self.pending.get() + 1);
-        let capture = self.clone();
-        view.save_to_file(
-            &gtk::gio::File::for_path(self.dir.join("page.mhtml")),
-            SaveMode::Mhtml,
-            None::<&gtk::gio::Cancellable>,
-            move |result| {
-                capture.event(
-                    "archive",
-                    json!({"error":result.err().map(|e|e.to_string())}),
-                );
-                capture.pending.set(capture.pending.get() - 1);
-            },
-        );
+        if self.persistent {
+            self.snapshot(view, "final");
+            self.pending.set(self.pending.get() + 1);
+            let capture = self.clone();
+            view.save_to_file(
+                &gtk::gio::File::for_path(self.dir.join("page.mhtml")),
+                SaveMode::Mhtml,
+                None::<&gtk::gio::Cancellable>,
+                move |result| {
+                    capture.event(
+                        "archive",
+                        json!({"error":result.err().map(|e|e.to_string())}),
+                    );
+                    capture.pending.set(capture.pending.get() - 1);
+                },
+            );
+        }
         if let Some(manager) = view.context().and_then(|context| context.cookie_manager()) {
             let uris: Vec<_> = self.cookie_uris.borrow().iter().cloned().collect();
             for (index, uri) in uris.into_iter().enumerate() {
@@ -190,9 +219,28 @@ impl Capture {
     }
 }
 
+impl Drop for Capture {
+    fn drop(&mut self) {
+        if !self.persistent {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
 fn now() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+#[cfg(unix)]
+fn set_private_dir(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn set_private_dir(_path: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
 }
