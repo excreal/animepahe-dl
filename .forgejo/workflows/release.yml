@@ -91,15 +91,43 @@ jobs:
           git checkout --detach "refs/tags/${TAG}"
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/${TAG}^{commit}")"
 
-      - name: Check Rust toolchain
+      - name: Check cached Rust toolchain
         id: rust
         run: |
-          if command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1; then
-            echo "Rust is already installed: $(rustc --version)"
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Rust toolchain is missing; installing stable Rust."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
+          set -eu
+          export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          echo "CARGO_HOME=$CARGO_HOME" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$RUSTUP_HOME" >> "$GITHUB_ENV"
+
+          # Fail clearly rather than downloading Rust into a disposable /opt
+          # directory when a runner cache mount has been silently dropped.
+          for directory in "$CARGO_HOME" "$RUSTUP_HOME"; do
+            case "$directory" in
+              /opt/cargo|/opt/rustup)
+                if ! awk -v directory="$directory" '$5==directory {found=1} END {exit !found}' /proc/self/mountinfo; then
+                  echo "::error::Persistent cache is not mounted at $directory; check runner container.valid_volumes"
+                  exit 1
+                fi
+                ;;
+            esac
+          done
+
+          ready=false
+          if command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1 &&
+              RUSTUP_AUTO_INSTALL=0 cargo --version >/dev/null 2>&1 &&
+              RUSTUP_AUTO_INSTALL=0 rustc --version >/dev/null 2>&1; then
+            target_libdir="$(RUSTUP_AUTO_INSTALL=0 rustc --print target-libdir --target x86_64-unknown-linux-gnu 2>/dev/null || true)"
+            if [ -d "$target_libdir" ]; then
+              ready=true
+              echo "Reusing cached Rust: $(RUSTUP_AUTO_INSTALL=0 rustc --version)"
+            fi
+          fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          if [ "$ready" = false ]; then
+            echo "Cached Rust or the Linux x64 target is missing; installing once into $RUSTUP_HOME."
           fi
 
       - name: Setup Rust
