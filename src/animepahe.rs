@@ -391,10 +391,11 @@ pub fn run(
                 Some((
                     entry["session"].as_str()?.to_owned(),
                     entry["title"].as_str()?.to_owned(),
+                    release_year(&entry["year"]),
                 ))
             })
             .collect();
-        choose_anime(&choices, None)?
+        choose_search_result(&choices)?
     } else {
         let choices = if anime_list.exists() {
             read_catalogue(&anime_list)?
@@ -643,6 +644,48 @@ fn choose_anime(
     let slug = line[1..close].to_owned();
     let title = line[close + 2..].trim().to_owned();
     Ok((slug, title))
+}
+
+fn choose_search_result(
+    choices: &[(String, String, Option<i32>)],
+) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let input = choices
+        .iter()
+        .map(|(slug, title, year)| {
+            let year = year.map_or_else(|| "year unknown".to_owned(), |year| year.to_string());
+            format!("[{slug}] {year} — {title}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut child = Command::new("fzf")
+        .args(["--select-1", "--exit-0"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or("fzf stdin unavailable")?
+        .write_all(input.as_bytes())?;
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Err("Anime selection cancelled".into());
+    }
+    let line = String::from_utf8(output.stdout)?;
+    let close = line.find("] ").ok_or("Could not parse fzf selection")?;
+    let slug = &line[1..close];
+    choices
+        .iter()
+        .find(|choice| choice.0 == slug)
+        .map(|(slug, title, _)| (slug.clone(), title.clone()))
+        .ok_or_else(|| "Selected anime was not in the search results".into())
+}
+
+fn release_year(value: &Value) -> Option<i32> {
+    value
+        .as_i64()
+        .and_then(|year| i32::try_from(year).ok())
+        .or_else(|| value.as_str()?.trim().parse().ok())
 }
 
 fn fetch_episodes(
