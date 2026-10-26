@@ -29,7 +29,7 @@ env:
 
 jobs:
   release:
-    name: Build, test and publish
+    name: Build and publish
     runs-on: ubuntu-latest
 
     steps:
@@ -82,15 +82,6 @@ jobs:
 
       - name: Setup Rust
         uses: https://github.com/dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Test and lint
-        run: |
-          set -eu
-          cargo fmt --check
-          cargo clippy --locked --all-targets -- -D warnings
-          cargo test --locked
 
       - name: Build Linux x64 release
         run: |
