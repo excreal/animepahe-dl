@@ -17,17 +17,6 @@ pub struct Session {
     _lock: File,
 }
 
-impl Session {
-    pub fn set_user_agent(&mut self, value: &str) -> io::Result<()> {
-        if value.trim().is_empty() || value.contains(['\r', '\n']) {
-            return Err(io::Error::other("Invalid user agent"));
-        }
-        private_write(&self.dir.join("user-agent.txt"), value.as_bytes())?;
-        self.user_agent = value.to_owned();
-        Ok(())
-    }
-}
-
 pub fn app_config_dir() -> io::Result<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|value| !value.is_empty())
@@ -49,28 +38,34 @@ pub fn load_app_config() -> io::Result<Value> {
     let app_dir = app_config_dir()?;
     fs::create_dir_all(&app_dir)?;
     fs::set_permissions(&app_dir, fs::Permissions::from_mode(0o700))?;
-    let config_file = app_dir.join("config.json");
-    if !config_file.exists() {
-        let legacy_config = PathBuf::from("config.json");
-        if legacy_config.is_file() {
-            private_write(&config_file, &fs::read(&legacy_config)?)?;
-            fs::remove_file(legacy_config)?;
-        } else {
-            private_write(&config_file, include_bytes!("../config.default.json"))?;
-        }
-    }
-
-    let mut config: Value = serde_json::from_slice(&fs::read(&config_file)?)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let defaults: Value = serde_json::from_str(include_str!("../config.default.json"))
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let config_file = app_dir.join("config.toml");
+    let legacy_app_config = app_dir.join("config.json");
+    let legacy_project_config = PathBuf::from("config.json");
+    let defaults_text = include_str!("../config.default.toml");
+    let mut config = if config_file.is_file() {
+        parse_toml_config(&fs::read_to_string(&config_file)?)?
+    } else if legacy_app_config.is_file() {
+        serde_json::from_slice(&fs::read(&legacy_app_config)?)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+    } else if legacy_project_config.is_file() {
+        serde_json::from_slice(&fs::read(&legacy_project_config)?)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+    } else {
+        parse_toml_config(defaults_text)?
+    };
+    let defaults = parse_toml_config(defaults_text)?;
     let config_object = config.as_object_mut().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "config.json must be an object")
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "config must be a key/value object",
+        )
     })?;
     let default_object = defaults
         .as_object()
         .ok_or_else(|| io::Error::other("embedded default config must be an object"))?;
-    let mut changed = false;
+    let mut changed = !config_file.is_file();
+    changed |= config_object.remove("ua").is_some();
+    changed |= config_object.remove("cf").is_some();
     for (key, value) in default_object {
         if !config_object.contains_key(key) {
             config_object.insert(key.clone(), value.clone());
@@ -78,11 +73,91 @@ pub fn load_app_config() -> io::Result<Value> {
         }
     }
     if changed {
-        let bytes = serde_json::to_vec_pretty(&config)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        private_write(&config_file, &bytes)?;
+        let rendered = render_toml_config(&config, defaults_text)?;
+        private_write(&config_file, rendered.as_bytes())?;
+        if legacy_project_config.is_file() {
+            fs::remove_file(legacy_project_config)?;
+        }
+        if legacy_app_config.is_file() {
+            fs::remove_file(legacy_app_config)?;
+        }
     }
     Ok(config)
+}
+
+fn parse_toml_config(text: &str) -> io::Result<Value> {
+    let mut values = serde_json::Map::new();
+    for (line_number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, raw_value) = line.split_once('=').ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid config line {}", line_number + 1),
+            )
+        })?;
+        let raw_value = strip_toml_comment(raw_value).trim();
+        let value = serde_json::from_str(raw_value).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid config value on line {}: {error}", line_number + 1),
+            )
+        })?;
+        values.insert(key.trim().to_owned(), value);
+    }
+    Ok(Value::Object(values))
+}
+
+fn strip_toml_comment(value: &str) -> &str {
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, character) in value.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if character == '\\' && in_string {
+            escaped = true;
+        } else if character == '"' {
+            in_string = !in_string;
+        } else if character == '#' && !in_string {
+            return &value[..index];
+        }
+    }
+    value
+}
+
+fn render_toml_config(config: &Value, template: &str) -> io::Result<String> {
+    let object = config.as_object().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "config must be a key/value object",
+        )
+    })?;
+    let mut output = String::new();
+    let mut written = std::collections::BTreeSet::new();
+    for line in template.lines() {
+        if let Some((key, _)) = line.split_once('=') {
+            let key = key.trim();
+            if let Some(value) = object.get(key) {
+                let value = serde_json::to_string(value)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                output.push_str(&format!("{key} = {value}\n"));
+                written.insert(key.to_owned());
+                continue;
+            }
+        }
+        output.push_str(line);
+        output.push('\n');
+    }
+    for (key, value) in object {
+        if !written.contains(key) {
+            let value = serde_json::to_string(value)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            output.push_str(&format!("\n# User-defined option.\n{key} = {value}\n"));
+        }
+    }
+    Ok(output)
 }
 
 fn migrate_legacy_state(app_dir: &Path, session_dir: &Path) -> io::Result<()> {

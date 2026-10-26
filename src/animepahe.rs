@@ -345,34 +345,13 @@ pub fn run(
     let host = std::env::var("ANIMEPAHE_HOST")
         .ok()
         .or_else(|| config["animepahe_host"].as_str().map(str::to_owned))
-        .ok_or("config.json is missing animepahe_host")?;
+        .ok_or("config.toml is missing animepahe_host")?;
     let host = host.trim_end_matches('/').to_owned();
     let mut network = Network {
         session,
         capture: capture.clone(),
         debug: options.debug,
     };
-    {
-        if let Some(ua) = config["ua"].as_str().filter(|ua| !ua.trim().is_empty()) {
-            network.session.set_user_agent(ua)?;
-        }
-        if let Some(clearance) = config["cf"]
-            .as_str()
-            .filter(|value| !value.trim().is_empty())
-        {
-            if !fs::read_to_string(network.session.dir.join("cookies.txt"))?
-                .contains("\tcf_clearance\t")
-            {
-                let expires = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)?
-                    .as_secs()
-                    + 1800;
-                let mut jar = fs::read_to_string(network.session.dir.join("cookies.txt"))?;
-                jar.push_str(&format!("#HttpOnly_animepahe.pw\tFALSE\t/\tTRUE\t{expires}\tcf_clearance\t{clearance}\n"));
-                private_write(&network.session.dir.join("cookies.txt"), jar.as_bytes())?;
-            }
-        }
-    }
     let anime_list = PathBuf::from("anime.list");
     let catalogue = if let Some(name) = options.name.as_deref() {
         let mut url = Url::parse(&format!("{host}/api"))?;

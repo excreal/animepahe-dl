@@ -69,9 +69,9 @@ Existing episode files are skipped; `--force` replaces them.
 It uses `~/.config/animepahe-dl/session/user-agent.txt` and
 `~/.config/animepahe-dl/session/cookies.txt` for curl requests, including
 search, catalogue, episode, play, and Kwik player pages. An optional
-`~/.config/animepahe-dl/config.json` with `ua` and `cf` values seeds the saved
-user agent and `cf_clearance` cookie. Existing project-local `.session/` and
-`config.json` files are migrated on first run. Each curl request saves traces, raw
+The browser user agent and cookies are stored in the reusable session files.
+Existing project-local `.session/` and `config.json` settings are migrated on
+first run. Each curl request saves traces, raw
 headers, status metadata, and the response body under
 `~/.config/animepahe-dl/captures/<run>/animepahe/requests/`. Detected CAPTCHA responses open WebKit for
 manual completion, import the updated session, and retry the request.
@@ -88,14 +88,15 @@ challenge pages there open WebKit and trigger one download retry. The `yt-dlp`
 handoff is a separate network client, so those dumps/logs provide its available
 diagnostics while curl requests retain the full raw trace and headers.
 
-The first run creates `~/.config/animepahe-dl/config.json` (or the equivalent
+The first run creates `~/.config/animepahe-dl/config.toml` (or the equivalent
 under `$XDG_CONFIG_HOME`) from the shipped defaults. Edit it to set the default
 audio language, quality, output directory, filename template, fragment
-concurrency, AnimePahe host, user agent, or Cloudflare clearance cookie. The
+concurrency, or AnimePahe host. The browser user agent and Cloudflare cookies
+come from the reusable session and are not duplicated in the config. The
 default audio is `original`, selected from the active audio source (or the first
 listed source if none is active); `quality` defaults to `best`.
 
-The config keys are `animepahe_host`, `ua`, `cf`, `audio_language`, `quality`,
+The commented TOML config lists `animepahe_host`, `audio_language`, `quality`,
 `output_directory`, `filename_template`, and `concurrent_fragments`. The
 filename template supports `{anime}`, `{episode}`, `{episode:02}`, and
 `{quality}`. Set `audio_language` to `original` or a code such as `eng`, `jpn`,

@@ -1,0 +1,17 @@
+# AnimePahe site used for search and episode requests.
+animepahe_host = "https://animepahe.pw"
+
+# Audio track: "original" follows the active track, or set a code like "eng", "jpn", or "kor".
+audio_language = "original"
+
+# Video quality: "best" picks the highest available, or set a height such as "720".
+quality = "best"
+
+# Download directory. Each anime gets its own subfolder here.
+output_directory = "."
+
+# Filename template tokens: {anime}, {episode}, {episode:02}, {quality}.
+filename_template = "{anime} e{episode:02} {quality}.mp4"
+
+# Parallel HLS segments (1 to 32).
+concurrent_fragments = 8
