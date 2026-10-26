@@ -278,6 +278,10 @@ pub(crate) fn run_browser(
     let webview = session.browser()?;
     capture.attach(&webview);
     let ready_checks = Rc::new(Cell::new(0));
+    let completed = Rc::new(Cell::new(false));
+    let load_finishing = finishing.clone();
+    let load_loop = main_loop.clone();
+    let load_completed = completed.clone();
     let weak_window = window.downgrade();
     let load_capture = capture.clone();
     let load_checks = ready_checks.clone();
@@ -288,6 +292,24 @@ pub(crate) fn run_browser(
             let title = view.title().unwrap_or_else(|| "Untitled".into());
             load_capture.snapshot(view, "loaded");
             if let Some(window) = weak_window.upgrade() { window.set_title(&format!("{title} — animepahe-dl")); }
+            if let Some(response) = view.main_resource().and_then(|resource| resource.response()) {
+                let status = response.status_code();
+                let mime = response.mime_type().unwrap_or_default().to_ascii_lowercase();
+                let is_html = mime.starts_with("text/html") || mime.starts_with("application/xhtml+xml");
+                let mut is_challenge = false;
+                if let Some(headers) = response.http_headers() {
+                    headers.foreach(|name, value| {
+                        if name.eq_ignore_ascii_case("cf-mitigated") && value.eq_ignore_ascii_case("challenge") {
+                            is_challenge = true;
+                        }
+                    });
+                }
+                if !is_html && (200..300).contains(&status) && !is_challenge {
+                    load_completed.set(true);
+                    load_capture.event("completion_check", json!({"ready":true,"reason":"successful_non_html_document","status":status,"mime":mime}));
+                    finish(view, &load_capture, &load_finishing, &load_loop, "non_html_document");
+                }
+            }
         }
     });
     let error_capture = capture.clone();
@@ -332,7 +354,6 @@ pub(crate) fn run_browser(
     let poll_capture = capture.clone();
     let poll_loop = main_loop.clone();
     let poll_finishing = finishing.clone();
-    let completed = Rc::new(Cell::new(false));
     let poll_completed = completed.clone();
     let poll = gtk::glib::timeout_add_local(Duration::from_secs(1), move || {
         let Some(view) = weak_view.upgrade() else {
@@ -406,7 +427,6 @@ pub(crate) fn run_browser(
     window.show_all();
     main_loop.run();
     poll.remove();
-    webview.terminate_web_process();
     window.hide();
     // The GTK loop has stopped and this function owns the top-level window.
     unsafe { window.destroy() };
@@ -492,7 +512,6 @@ pub mod tests {
         view.connect_web_process_terminated(move |_, _| exit_loop.quit());
         view.load_uri(&url);
         main_loop.run();
-        view.terminate_web_process();
         assert_eq!(capture.pending.get(), 0);
         assert!(capture.dir.join("page.mhtml").exists());
         assert!(capture.dir.join("cookies.json").exists());
