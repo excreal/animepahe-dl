@@ -73,7 +73,7 @@ search, catalogue, episode, play, and Kwik player pages. An optional
 user agent and `cf_clearance` cookie. Existing project-local `.session/` and
 `config.json` files are migrated on first run. Each curl request saves traces, raw
 headers, status metadata, and the response body under
-`captures/<run>/animepahe/requests/`. Detected CAPTCHA responses open WebKit for
+`~/.config/animepahe-dl/captures/<run>/animepahe/requests/`. Detected CAPTCHA responses open WebKit for
 manual completion, import the updated session, and retry the request.
 
 Playlist extraction preserves the shell script's `glot.io` JavaScript runner
@@ -83,13 +83,28 @@ host. Its native HLS downloader carries those request settings to segments;
 ffmpeg only remuxes the downloaded local media. A live progress bar is parsed
 from yt-dlp's newline output. Its HTTP traffic log and
 `--write-pages` response
-dumps are saved under `captures/<run>/animepahe/yt-dlp/<episode>/`; detected
+dumps are saved under `~/.config/animepahe-dl/captures/<run>/animepahe/yt-dlp/<episode>/`; detected
 challenge pages there open WebKit and trigger one download retry. The `yt-dlp`
 handoff is a separate network client, so those dumps/logs provide its available
 diagnostics while curl requests retain the full raw trace and headers.
 
-When `-o` is omitted, the downloader prefers English audio when that episode
-offers it; otherwise it uses the existing resolution and source fallback.
+The first run creates `~/.config/animepahe-dl/config.json` (or the equivalent
+under `$XDG_CONFIG_HOME`) from the shipped defaults. Edit it to set the default
+audio language, quality, output directory, filename template, fragment
+concurrency, AnimePahe host, user agent, or Cloudflare clearance cookie. The
+default audio is `original`, selected from the active audio source (or the first
+listed source if none is active); `quality` defaults to `best`.
+
+The config keys are `animepahe_host`, `ua`, `cf`, `audio_language`, `quality`,
+`output_directory`, `filename_template`, and `concurrent_fragments`. The
+filename template supports `{anime}`, `{episode}`, `{episode:02}`, and
+`{quality}`. Set `audio_language` to `original` or a code such as `eng`, `jpn`,
+or `kor`; set `quality` to `best` or a height such as `720`.
+
+Downloads use the configured filename template. By default, a series folder
+contains files named `Anime Name e01 720p.mp4`, with the resolution taken from
+the selected source. The filename has no year. CLI `-o` and `-r` options
+override the config for one run.
 
 The downloader checks its required commands before making requests: curl,
 yt-dlp, Python with yt-dlp's AES support (`python-pycryptodomex`), ffmpeg, and
@@ -128,7 +143,7 @@ reuse was not accepted, and stops rather than repeatedly requesting solutions.
 Import another successful capture without making a network request:
 
 ```sh
-cargo run -- --import-session captures/<run> --import-only
+cargo run -- --import-session ~/.config/animepahe-dl/captures/<run> --import-only
 ```
 
 ## Options
@@ -148,8 +163,9 @@ cargo run -- --url https://idrama.dramafren.org/
 
 Captures are disabled by default. Add `--capture` to a page fetch or downloader
 command to save request and browser diagnostics in
-`captures/<timestamp>-<pid>/`. Without it, temporary request data is removed at
-the end of the run.
+`~/.config/animepahe-dl/captures/<timestamp>-<pid>/` (or under
+`$XDG_CONFIG_HOME`). Without it, temporary request data is removed at the end
+of the run.
 
 - `page-details.json`: latest successful static details, or rendered browser
   details if HTTP reuse is still challenged after manual verification.

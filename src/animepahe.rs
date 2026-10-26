@@ -16,10 +16,9 @@ use url::Url;
 use crate::{
     capture::Capture,
     http,
-    session::{app_config_dir, private_write, Session},
+    session::{load_app_config, private_write, Session},
 };
 
-const DEFAULT_HOST: &str = "https://animepahe.pw";
 const PLAYLIST_HOST: &str = "https://glot.io/api/mux";
 const MEDIA_REFERER: &str = "https://kwik.cx/";
 
@@ -342,15 +341,18 @@ pub fn run(
         return Ok(());
     }
     check_dependencies(&options)?;
-    let host = std::env::var("ANIMEPAHE_HOST").unwrap_or_else(|_| DEFAULT_HOST.to_owned());
+    let config = load_app_config()?;
+    let host = std::env::var("ANIMEPAHE_HOST")
+        .ok()
+        .or_else(|| config["animepahe_host"].as_str().map(str::to_owned))
+        .ok_or("config.json is missing animepahe_host")?;
     let host = host.trim_end_matches('/').to_owned();
     let mut network = Network {
         session,
         capture: capture.clone(),
         debug: options.debug,
     };
-    if let Ok(bytes) = fs::read(app_config_dir()?.join("config.json")) {
-        let config: Value = serde_json::from_slice(&bytes)?;
+    {
         if let Some(ua) = config["ua"].as_str().filter(|ua| !ua.trim().is_empty()) {
             network.session.set_user_agent(ua)?;
         }
@@ -412,16 +414,17 @@ pub fn run(
         }
     };
     let anime_name = safe_name(&catalogue.1);
-    let directory = Path::new(&anime_name);
-    fs::create_dir_all(directory)?;
+    let output_root = config["output_directory"].as_str().unwrap_or(".");
+    let directory = Path::new(output_root).join(&anime_name);
+    fs::create_dir_all(&directory)?;
     let source_path = directory.join(".source.json");
     let source = fetch_episodes(&mut network, &host, &catalogue.0)?;
     private_write(&source_path, &serde_json::to_vec_pretty(&source)?)?;
     let episodes = select_episodes(&source, options.episodes.as_deref())?;
     for episode in episodes {
-        let destination = directory.join(format!("{episode}.mp4"));
+        let legacy_destination = directory.join(format!("{episode}.mp4"));
         if !options.links_only && !options.force {
-            let output_path = absolute_path(&destination)?;
+            let output_path = absolute_path(&legacy_destination)?;
             if output_path.exists() {
                 if valid_media(&output_path)? {
                     cleanup_download_artifacts(&output_path)?;
@@ -434,12 +437,43 @@ pub fn run(
         let play_url = format!("{host}/play/{}/{}", catalogue.0, episode_page);
         let html = network.request("GET", &play_url, &format!("{host}/"), None)?;
         ensure_success(&html)?;
-        let source_url = choose_source(
+        let requested_language = options
+            .language
+            .as_deref()
+            .or_else(|| config["audio_language"].as_str());
+        let requested_quality = options
+            .resolution
+            .as_deref()
+            .or_else(|| config["quality"].as_str());
+        let (source_url, selected_height) = choose_source(
             &String::from_utf8_lossy(&html.body),
-            options.resolution.as_deref(),
-            options.language.as_deref(),
+            requested_quality,
+            requested_language,
         )
         .ok_or_else(|| format!("No Kwik source found for episode {episode}"))?;
+        let quality = if selected_height > 0 {
+            format!("{selected_height}p")
+        } else {
+            requested_quality.unwrap_or("best").to_owned()
+        };
+        let filename = config["filename_template"]
+            .as_str()
+            .unwrap_or("{anime} e{episode:02} {quality}.mp4")
+            .replace("{anime}", &anime_name)
+            .replace("{episode:02}", &format!("{episode:0>2}"))
+            .replace("{episode}", &episode)
+            .replace("{quality}", &quality);
+        let destination = directory.join(filename);
+        if !options.links_only && !options.force {
+            let output_path = absolute_path(&destination)?;
+            if output_path.exists() {
+                if valid_media(&output_path)? {
+                    cleanup_download_artifacts(&output_path)?;
+                }
+                println!("Episode {episode} exists; skipped. Use --force to replace it.");
+                continue;
+            }
+        }
         let playlist = resolve_playlist(&mut network, &source_url, &format!("{host}/"))?;
         if options.links_only {
             println!("{playlist}");
@@ -453,6 +487,10 @@ pub fn run(
             &destination,
             MEDIA_REFERER,
             options.force,
+            config["concurrent_fragments"]
+                .as_u64()
+                .unwrap_or(8)
+                .clamp(1, 32),
         )?;
         println!("Downloaded episode {episode}: {}", destination.display());
     }
@@ -508,7 +546,7 @@ fn next(
 }
 
 pub(crate) fn print_help() {
-    println!("AnimePahe downloader\n\nUsage: animepahe-dl animepahe [--capture] [-a NAME | -s SLUG] [-e EPISODES] [-r HEIGHT] [-o LANGUAGE] [-l] [--force]\n\n --capture              save request and browser diagnostics under captures/\n -a, --name NAME        search anime title\n -s, --slug SLUG        select an anime session/slug\n -e, --episodes RANGE   comma-separated episode numbers, ranges, or *\n -r, --resolution HEIGHT requested resolution, default 1080p\n -o, --language CODE    audio language; defaults to English when available\n -l                     print playlist URL without downloading\n -f, --force            replace existing episode files\n -d                     log request URLs and statuses\n -h, --help             show this help\n\nAnime options can also be used directly, e.g. animepahe-dl -a title.");
+    println!("AnimePahe downloader\n\nUsage: animepahe-dl animepahe [--capture] [--session-dir PATH] [-a NAME | -s SLUG] [-e EPISODES] [-r HEIGHT] [-o LANGUAGE] [-l] [--force]\n\n --capture              save request and browser diagnostics under ~/.config/animepahe-dl/captures/\n --session-dir PATH     session storage location\n -a, --name NAME        search anime title\n -s, --slug SLUG        select an anime session/slug\n -e, --episodes RANGE   comma-separated episode numbers, ranges, or *\n -r, --resolution HEIGHT requested resolution; config default is best\n -o, --language CODE    audio language; config default is original\n -l                     print playlist URL without downloading\n -f, --force            replace existing episode files\n -d                     log request URLs and statuses\n -h, --help             show this help\n\nThe default session is under $XDG_CONFIG_HOME/animepahe-dl/session, or ~/.config/animepahe-dl/session when XDG_CONFIG_HOME is unset. Anime options can also be used directly, e.g. animepahe-dl -a title.");
 }
 
 fn check_dependencies(options: &Options) -> Result<(), Box<dyn std::error::Error>> {
@@ -803,7 +841,11 @@ fn episode_page_for(source: &Value, episode: &str) -> Result<String, Box<dyn std
         .ok_or_else(|| format!("Episode {episode} has no session id").into())
 }
 
-fn choose_source(html: &str, resolution: Option<&str>, language: Option<&str>) -> Option<String> {
+fn choose_source(
+    html: &str,
+    resolution: Option<&str>,
+    language: Option<&str>,
+) -> Option<(String, u32)> {
     let document = Html::parse_document(html);
     let mut sources = vec![];
     for button in document.select(&next_selector("button[data-src]")) {
@@ -821,15 +863,34 @@ fn choose_source(html: &str, resolution: Option<&str>, language: Option<&str>) -
             .trim_end_matches('p')
             .parse::<u32>()
             .unwrap_or(0);
+        let active = button
+            .value()
+            .attr("class")
+            .unwrap_or("")
+            .split_whitespace()
+            .any(|name| name == "active");
         sources.push((
             href.to_owned(),
             resolution_value,
             button.value().attr("data-audio").unwrap_or("").to_owned(),
+            active,
         ));
     }
     if sources.is_empty() {
         return None;
     }
+    let requested_height = resolution
+        .filter(|value| !value.eq_ignore_ascii_case("best"))
+        .and_then(|r| r.trim_end_matches('p').parse::<u32>().ok());
+    let requested_audio = if language.is_some_and(|value| value.eq_ignore_ascii_case("original")) {
+        sources
+            .iter()
+            .find(|source| source.3 && !source.2.is_empty())
+            .or_else(|| sources.iter().find(|source| !source.2.is_empty()))
+            .map(|source| source.2.as_str())
+    } else {
+        language
+    };
     let filtered = |height: Option<u32>, audio: Option<&str>| {
         sources
             .iter()
@@ -840,36 +901,11 @@ fn choose_source(html: &str, resolution: Option<&str>, language: Option<&str>) -
                     })
             })
             .max_by_key(|source| source.1)
-            .map(|source| source.0.clone())
+            .map(|source| (source.0.clone(), source.1))
     };
-    let auto_english = language.is_none()
-        && sources
-            .iter()
-            .any(|source| language_name(&source.2).eq_ignore_ascii_case("English"));
-    let preferred_language = language.or(auto_english.then_some("eng"));
-    let selected = filtered(
-        resolution.and_then(|r| r.trim_end_matches('p').parse().ok()),
-        preferred_language,
-    );
-    if auto_english {
-        return selected
-            .or_else(|| filtered(None, preferred_language))
-            .or_else(|| {
-                filtered(
-                    resolution.and_then(|r| r.trim_end_matches('p').parse().ok()),
-                    None,
-                )
-            })
-            .or_else(|| filtered(None, None));
-    }
-    selected
-        .or_else(|| {
-            filtered(
-                resolution.and_then(|r| r.trim_end_matches('p').parse().ok()),
-                None,
-            )
-        })
-        .or_else(|| filtered(None, language))
+    filtered(requested_height, requested_audio)
+        .or_else(|| filtered(None, requested_audio))
+        .or_else(|| filtered(requested_height, None))
         .or_else(|| filtered(None, None))
 }
 
@@ -945,6 +981,7 @@ fn download_video(
     destination: &Path,
     referer: &str,
     force: bool,
+    concurrent_fragments: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let output_path = absolute_path(destination)?;
     if force {
@@ -986,7 +1023,7 @@ fn download_video(
                 "--downloader",
                 "m3u8:native",
                 "--concurrent-fragments",
-                "8",
+                &concurrent_fragments.to_string(),
                 "--remux-video",
                 "mp4",
                 "--no-warnings",

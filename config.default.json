@@ -1,0 +1,12 @@
+{
+  "animepahe_host": "https://animepahe.pw",
+  "ua": "",
+  "cf": "",
+  "ua": "",
+  "cf": "",
+  "audio_language": "original",
+  "quality": "best",
+  "output_directory": ".",
+  "filename_template": "{anime} e{episode:02} {quality}.mp4",
+  "concurrent_fragments": 8
+}

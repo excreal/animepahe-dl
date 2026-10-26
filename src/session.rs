@@ -41,7 +41,48 @@ pub fn default_session_dir() -> io::Result<PathBuf> {
     let app_dir = app_config_dir()?;
     let session_dir = app_dir.join("session");
     migrate_legacy_state(&app_dir, &session_dir)?;
+    load_app_config()?;
     Ok(session_dir)
+}
+
+pub fn load_app_config() -> io::Result<Value> {
+    let app_dir = app_config_dir()?;
+    fs::create_dir_all(&app_dir)?;
+    fs::set_permissions(&app_dir, fs::Permissions::from_mode(0o700))?;
+    let config_file = app_dir.join("config.json");
+    if !config_file.exists() {
+        let legacy_config = PathBuf::from("config.json");
+        if legacy_config.is_file() {
+            private_write(&config_file, &fs::read(&legacy_config)?)?;
+            fs::remove_file(legacy_config)?;
+        } else {
+            private_write(&config_file, include_bytes!("../config.default.json"))?;
+        }
+    }
+
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_file)?)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let defaults: Value = serde_json::from_str(include_str!("../config.default.json"))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let config_object = config.as_object_mut().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "config.json must be an object")
+    })?;
+    let default_object = defaults
+        .as_object()
+        .ok_or_else(|| io::Error::other("embedded default config must be an object"))?;
+    let mut changed = false;
+    for (key, value) in default_object {
+        if !config_object.contains_key(key) {
+            config_object.insert(key.clone(), value.clone());
+            changed = true;
+        }
+    }
+    if changed {
+        let bytes = serde_json::to_vec_pretty(&config)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        private_write(&config_file, &bytes)?;
+    }
+    Ok(config)
 }
 
 fn migrate_legacy_state(app_dir: &Path, session_dir: &Path) -> io::Result<()> {
@@ -55,13 +96,6 @@ fn migrate_legacy_state(app_dir: &Path, session_dir: &Path) -> io::Result<()> {
         }
     }
 
-    let legacy_config = PathBuf::from("config.json");
-    let config_file = app_dir.join("config.json");
-    if legacy_config.is_file() && !config_file.exists() {
-        let contents = fs::read(&legacy_config)?;
-        private_write(&config_file, &contents)?;
-        fs::remove_file(legacy_config)?;
-    }
     Ok(())
 }
 
