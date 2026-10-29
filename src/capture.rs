@@ -87,15 +87,20 @@ impl Capture {
     }
 
     pub fn attach(self: &Rc<Self>, view: &WebView) {
-        if !self.persistent {
-            let capture = self.clone();
-            view.connect_resource_load_started(move |_, _, request| {
-                if let Some(uri) = request.uri() {
-                    if uri.starts_with("http://") || uri.starts_with("https://") {
-                        capture.cookie_uris.borrow_mut().insert(uri.to_string());
-                    }
+        let capture = self.clone();
+        view.connect_resource_load_started(move |_, resource, request| {
+            capture.observe_cookie_uri(request.uri().as_deref());
+            let capture = capture.clone();
+            // Redirects reuse the resource, so resource-load-started alone is insufficient.
+            // Decode this signal manually: its redirect response is nullable.
+            resource.connect_local("sent-request", false, move |values| {
+                if let Some(request) = values.get(1).and_then(|v| v.get::<URIRequest>().ok()) {
+                    capture.observe_cookie_uri(request.uri().as_deref());
                 }
+                None
             });
+        });
+        if !self.persistent {
             return;
         }
         if let Some(manager) = view.user_content_manager() {
@@ -115,9 +120,6 @@ impl Capture {
         }
         let capture = self.clone();
         view.connect_resource_load_started(move |_, resource, request| {
-            if let Some(uri) = request.uri() {
-                if uri.starts_with("http://") || uri.starts_with("https://") {capture.cookie_uris.borrow_mut().insert(uri.to_string());}
-            }
             let id = capture.id();
             let mut headers = vec![];
             if let Some(h) = request.http_headers() { h.foreach(|name, value| headers.push(json!([name, value]))); }
@@ -190,7 +192,16 @@ impl Capture {
         );
     }
 
+    fn observe_cookie_uri(&self, uri: Option<&str>) {
+        if let Some(uri) =
+            uri.filter(|uri| uri.starts_with("http://") || uri.starts_with("https://"))
+        {
+            self.cookie_uris.borrow_mut().insert(uri.to_owned());
+        }
+    }
+
     pub fn finalize(self: &Rc<Self>, view: &WebView) {
+        self.observe_cookie_uri(view.uri().as_deref());
         let browser_generation = self.browser_generation.get();
         if self.persistent {
             self.snapshot(view, "final");

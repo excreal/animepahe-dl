@@ -637,4 +637,57 @@ pub mod tests {
         assert!(!main_loop.is_running());
         main_loop.quit();
     }
+
+    pub fn saves_redirect_destination_cookies() {
+        use super::*;
+        use std::io::{Read, Write};
+        gtk::init().unwrap();
+        for persistent in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/start", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                for index in 0..3 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut request = [0; 8192];
+                    stream.read(&mut request).unwrap();
+                    if index == 0 {
+                        write!(stream, "HTTP/1.1 302 Found\r\nLocation: /middle\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    } else if index == 1 {
+                        write!(stream, "HTTP/1.1 302 Found\r\nLocation: /final\r\nSet-Cookie: intermediate=keep; Path=/middle; HttpOnly\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    } else {
+                        let body = r#"{"ok":true}"#;
+                        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: redirected=keep; Path=/final; HttpOnly\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+                    }
+                }
+            });
+            let capture = capture::Capture::new(persistent).unwrap();
+            let mut session = session::Session::open(&capture.dir.join("fixture-session")).unwrap();
+            let timeout = gtk::glib::timeout_add_local_once(Duration::from_secs(15), || {
+                panic!("Redirect browser timed out")
+            });
+            assert!(run_browser(capture.clone(), &session, &url).unwrap());
+            timeout.remove();
+            server.join().unwrap();
+            session.import_capture(&capture.dir).unwrap();
+            let events = std::fs::read_to_string(capture.dir.join("events.jsonl")).unwrap();
+            let jar = std::fs::read_to_string(session.dir.join("cookies.txt")).unwrap();
+            assert!(
+                jar.contains("redirected\tkeep"),
+                "Redirect destination cookie missing. Events: {events} Jar: {jar}"
+            );
+            assert!(
+                jar.contains("intermediate\tkeep"),
+                "Intermediate redirect cookie missing: {jar}"
+            );
+            drop(session);
+            let directory = capture.dir.clone();
+            drop(capture);
+            if persistent {
+                std::fs::remove_dir_all(directory).unwrap();
+            }
+        }
+    }
 }

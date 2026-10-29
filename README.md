@@ -56,7 +56,8 @@ supports AnimePahe host, audio language, quality, output directory, filename
 template, and concurrent fragments. The filename template supports `{anime}`,
 `{episode}`, `{episode:02}`, and `{quality}`. By default, the audio language is
 `original` and quality is `best`; command-line options override config values
-for one run.
+for one run. If a selected audio language is unavailable, the run stops with an
+error instead of downloading another language.
 
 Downloads use the configured filename template. By default, a series folder
 contains files named `Anime Name e01 720p.mp4`.

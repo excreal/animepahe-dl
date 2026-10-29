@@ -86,45 +86,9 @@ pub fn load_app_config() -> io::Result<Value> {
 }
 
 fn parse_toml_config(text: &str) -> io::Result<Value> {
-    let mut values = serde_json::Map::new();
-    for (line_number, line) in text.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let (key, raw_value) = line.split_once('=').ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Invalid config line {}", line_number + 1),
-            )
-        })?;
-        let raw_value = strip_toml_comment(raw_value).trim();
-        let value = serde_json::from_str(raw_value).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Invalid config value on line {}: {error}", line_number + 1),
-            )
-        })?;
-        values.insert(key.trim().to_owned(), value);
-    }
-    Ok(Value::Object(values))
-}
-
-fn strip_toml_comment(value: &str) -> &str {
-    let mut in_string = false;
-    let mut escaped = false;
-    for (index, character) in value.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if character == '\\' && in_string {
-            escaped = true;
-        } else if character == '"' {
-            in_string = !in_string;
-        } else if character == '#' && !in_string {
-            return &value[..index];
-        }
-    }
-    value
+    let parsed: toml::Value =
+        toml::from_str(text).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    serde_json::to_value(parsed).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 fn render_toml_config(config: &Value, template: &str) -> io::Result<String> {
@@ -140,7 +104,8 @@ fn render_toml_config(config: &Value, template: &str) -> io::Result<String> {
         if let Some((key, _)) = line.split_once('=') {
             let key = key.trim();
             if let Some(value) = object.get(key) {
-                let value = serde_json::to_string(value)
+                let value = toml::Value::try_from(value)
+                    .map(|value| value.to_string())
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
                 output.push_str(&format!("{key} = {value}\n"));
                 written.insert(key.to_owned());
@@ -152,8 +117,10 @@ fn render_toml_config(config: &Value, template: &str) -> io::Result<String> {
     }
     for (key, value) in object {
         if !written.contains(key) {
-            let value = serde_json::to_string(value)
+            let value = toml::Value::try_from(value)
+                .map(|value| value.to_string())
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let key = toml::Value::String(key.clone());
             output.push_str(&format!("\n# User-defined option.\n{key} = {value}\n"));
         }
     }
@@ -617,5 +584,29 @@ mod tests {
         assert_eq!(session.user_agent, "fixture-agent");
         drop(session);
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    #[test]
+    fn config_accepts_toml_literal_string() {
+        let parsed = parse_toml_config("output_directory = '/tmp/anime'\n").unwrap();
+        assert_eq!(parsed["output_directory"], "/tmp/anime");
+    }
+    #[test]
+    fn toml_values_and_migrated_json_round_trip_with_defaults() {
+        let parsed = parse_toml_config("output_directory = '/tmp/anime#folder' # comment\nconcurrent_fragments = 1_6\nfilename_template = \"\"\"{anime}\ne{episode}\"\"\"\n").unwrap();
+        assert_eq!(parsed["output_directory"], "/tmp/anime#folder");
+        assert_eq!(parsed["concurrent_fragments"], 16);
+        assert_eq!(parsed["filename_template"], "{anime}\ne{episode}");
+        let defaults = include_str!("../config.default.toml");
+        let mut migrated = parse_toml_config(defaults).unwrap();
+        migrated["output_directory"] = json!("/tmp/anime\u{0007}");
+        migrated["custom.key"] = json!({"enabled":true,"values":[1,2]});
+        let rendered = render_toml_config(&migrated, defaults).unwrap();
+        assert!(rendered.contains("# AnimePahe site"));
+        assert_eq!(parse_toml_config(&rendered).unwrap(), migrated);
     }
 }
