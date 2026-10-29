@@ -50,10 +50,10 @@ page's static source buttons. It prints the episode count, current episode,
 available languages, and whether English is listed, and stores them in the
 `animepahe` object in `page-details.json`.
 
-## AnimePahe downloader port
+## AnimePahe downloader
 
-The `animepahe-dl.sh` workflow is available as a Rust CLI. It supports title
-search or an anime slug, interactive `fzf` selection, episode lists and ranges,
+The Rust CLI supports title search or an anime slug, interactive `fzf`
+selection, episode lists and ranges,
 resolution/audio selection, playlist-only output, and yt-dlp downloads:
 
 ```sh
@@ -68,16 +68,17 @@ Existing episode files are skipped; `--force` replaces them.
 
 It uses `~/.config/animepahe-dl/session/user-agent.txt` and
 `~/.config/animepahe-dl/session/cookies.txt` for curl requests, including
-search, catalogue, episode, play, and Kwik player pages. An optional
-The browser user agent and cookies are stored in the reusable session files.
+search, catalogue, episode, play, and Kwik player pages.
 Existing project-local `.session/` and `config.json` settings are migrated on
 first run. Each curl request saves traces, raw
 headers, status metadata, and the response body under
 `~/.config/animepahe-dl/captures/<run>/animepahe/requests/`. Detected CAPTCHA responses open WebKit for
-manual completion, import the updated session, and retry the request.
+manual completion, import the updated session, and retry the request. API
+challenges open the same site’s homepage for verification, then retry the
+original API URL over HTTP.
 
-Playlist extraction preserves the shell script's `glot.io` JavaScript runner
-step. yt-dlp receives the saved cookies, Chrome impersonation (which supplies
+Playlist extraction uses the `glot.io` JavaScript runner. yt-dlp receives the
+saved cookies, Chrome impersonation (which supplies
 the matching Chrome user agent), and the Kwik referrer required by the media
 host. Its native HLS downloader carries those request settings to segments;
 ffmpeg only remuxes the downloaded local media. A live progress bar is parsed
@@ -206,5 +207,3 @@ cargo test --test completion -- --ignored --test-threads=1
 cargo test --test live_site fixed_application_handles_another_site -- --ignored --nocapture
 cargo test --test live_site manual_challenge_flow_on_another_site -- --ignored --nocapture
 ```
-
-See `CAPTURE_ANALYSIS.md` for the observed challenge sequence and HTTP reuse check.

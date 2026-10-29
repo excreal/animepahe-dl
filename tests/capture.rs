@@ -9,5 +9,6 @@ fn main() {
         return;
     }
     app::tests::captures_page_and_exits_without_shutdown_panic();
-    println!("Capture and shutdown regression passed.");
+    app::tests::closes_browser_after_json_response();
+    println!("Capture, JSON completion, and shutdown regressions passed.");
 }

@@ -25,7 +25,7 @@ pub struct Capture {
 impl Capture {
     pub fn new(persistent: bool) -> std::io::Result<Rc<Self>> {
         let root = if persistent {
-            let app_dir = crate::session::app_config_dir()?;
+            let app_dir = super::session::app_config_dir()?;
             fs::create_dir_all(&app_dir)?;
             set_private_dir(&app_dir)?;
             app_dir.join("captures")

@@ -43,9 +43,10 @@ fn cli_fetches_and_reuses_session_without_a_browser() {
         let mut command = Command::new(env!("CARGO_BIN_EXE_animepahe-dl"));
         command
             .current_dir(&root)
+            .env("XDG_CONFIG_HOME", root.join("config"))
             .env_remove("DISPLAY")
             .env_remove("WAYLAND_DISPLAY")
-            .args(["--url", &format!("http://{address}/")]);
+            .args(["--url", &format!("http://{address}/"), "--capture"]);
         if index == 2 {
             command.arg("--http-only");
         }
@@ -70,7 +71,14 @@ fn cli_fetches_and_reuses_session_without_a_browser() {
         .map(|r| r.lines().find(|l| l.starts_with("User-Agent:")).unwrap())
         .collect();
     assert!(agents.iter().all(|a| *a == agents[0]));
-    assert!(root.join(".session/user-agent.txt").exists());
-    assert_eq!(fs::read_dir(root.join("captures")).unwrap().count(), 3);
+    assert!(root
+        .join("config/animepahe-dl/session/user-agent.txt")
+        .exists());
+    assert_eq!(
+        fs::read_dir(root.join("config/animepahe-dl/captures"))
+            .unwrap()
+            .count(),
+        3
+    );
     fs::remove_dir_all(root).unwrap();
 }

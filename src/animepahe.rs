@@ -13,7 +13,7 @@ use scraper::{Html, Selector};
 use serde_json::{json, Value};
 use url::Url;
 
-use crate::{
+use super::{
     capture::Capture,
     http,
     session::{load_app_config, private_write, Session},
@@ -209,7 +209,8 @@ impl Network<'_> {
     fn solve_challenge(&mut self, url: &str) -> Result<(), Box<dyn std::error::Error>> {
         gtk::init()
             .map_err(|e| format!("A graphical session is required to solve this CAPTCHA: {e}"))?;
-        if !crate::run_browser(self.capture.clone(), self.session, url)? {
+        let browser_url = challenge_browser_url(url)?;
+        if !super::run_browser(self.capture.clone(), self.session, browser_url.as_str())? {
             return Err("CAPTCHA browser closed before the page finished loading".into());
         }
         self.session.import_capture(&self.capture.dir)?;
@@ -401,17 +402,6 @@ pub fn run(
     private_write(&source_path, &serde_json::to_vec_pretty(&source)?)?;
     let episodes = select_episodes(&source, options.episodes.as_deref())?;
     for episode in episodes {
-        let legacy_destination = directory.join(format!("{episode}.mp4"));
-        if !options.links_only && !options.force {
-            let output_path = absolute_path(&legacy_destination)?;
-            if output_path.exists() {
-                if valid_media(&output_path)? {
-                    cleanup_download_artifacts(&output_path)?;
-                }
-                println!("Episode {episode} exists; skipped. Use --force to replace it.");
-                continue;
-            }
-        }
         let episode_page = episode_page_for(&source, &episode)?;
         let play_url = format!("{host}/play/{}/{}", catalogue.0, episode_page);
         let html = network.request("GET", &play_url, &format!("{host}/"), None)?;
@@ -1363,5 +1353,35 @@ fn safe_name(name: &str) -> String {
         "anime".into()
     } else {
         cleaned
+    }
+}
+
+// API responses are data, so solve their challenge on the same site's HTML page.
+fn challenge_browser_url(request_url: &str) -> Result<Url, url::ParseError> {
+    let mut url = Url::parse(request_url)?;
+    if url.path() == "/api" || url.path().starts_with("/api/") {
+        url.set_path("/");
+        url.set_query(None);
+        url.set_fragment(None);
+    }
+    Ok(url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::challenge_browser_url;
+
+    #[test]
+    fn api_challenges_use_the_same_origin_homepage() {
+        for path in ["/api?m=search&q=returner&page=2", "/api/episodes?page=2"] {
+            assert_eq!(
+                challenge_browser_url(&format!("https://example.org:8443{path}"))
+                    .unwrap()
+                    .as_str(),
+                "https://example.org:8443/"
+            );
+        }
+        let play = "https://example.org/play/anime/episode?source=eng";
+        assert_eq!(challenge_browser_url(play).unwrap().as_str(), play);
     }
 }

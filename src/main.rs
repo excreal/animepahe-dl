@@ -428,6 +428,7 @@ pub(crate) fn run_browser(
     main_loop.run();
     poll.remove();
     window.hide();
+    webview.terminate_web_process();
     // The GTK loop has stopped and this function owns the top-level window.
     unsafe { window.destroy() };
     capture.event("exit", json!({"pending":capture.pending.get()}));
@@ -580,6 +581,36 @@ pub mod tests {
         assert!(cookies.contains("capture_fixture\tpresent"));
         drop(session);
         std::fs::remove_dir_all(&capture.dir).unwrap();
+    }
+
+    pub fn closes_browser_after_json_response() {
+        use super::*;
+        use std::io::{Read, Write};
+
+        gtk::init().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://{}/api?m=search&q=fixture",
+            listener.local_addr().unwrap()
+        );
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = [0; 8192];
+            stream.read(&mut request).unwrap();
+            let body = r#"{"total":1,"data":[{"title":"Fixture"}]}"#;
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        let capture = capture::Capture::new(false).unwrap();
+        let session = session::Session::open(&capture.dir.join("fixture-session")).unwrap();
+        let timeout = gtk::glib::timeout_add_local_once(Duration::from_secs(15), || {
+            panic!("Browser failed to close after a successful JSON API response");
+        });
+        assert!(run_browser(capture, &session, &url).unwrap());
+        timeout.remove();
+        server.join().unwrap();
     }
 
     #[test]
