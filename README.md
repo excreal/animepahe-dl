@@ -66,9 +66,21 @@ contains files named `Anime Name e01 720p.mp4`.
 
 The reusable AnimePahe session is stored in
 `~/.config/animepahe-dl/session/`. It contains the cookie jar, user agent, and
-persistent WebKit profile. Existing project-local `.session/` and `config.json`
-settings are migrated on first run. Session files have restricted permissions
-and are excluded from Git.
+persistent WebKit profile. On first run, project-local `config.json` is migrated
+automatically only when it contains the app-specific `animepahe_host` setting.
+Files containing only shared settings such as `quality` or older `ua`/`cf` keys
+are left untouched. To migrate those explicitly before a TOML config exists,
+copy the JSON file to `~/.config/animepahe-dl/config.json` (or
+`$XDG_CONFIG_HOME/animepahe-dl/config.json`). An existing TOML config takes
+precedence; transfer settings into it if it already exists. Migrated JSON is
+backed up next to its source as `config.json.migrated` (with a numeric suffix
+if that name exists).
+
+Project-local `.session/` is migrated only if the destination session directory
+does not already exist. The source must contain a Netscape `cookies.txt` jar or
+both `cookies.txt` and `user-agent.txt`. An existing destination is neither merged
+nor replaced. Missing user-agent files are recreated. Session files have
+restricted permissions and are excluded from Git.
 
 AnimePahe API and page requests use the saved cookies and user agent. When a
 challenge is detected, WebKit opens for manual completion; the app saves updated
@@ -86,7 +98,10 @@ excluded from Git.
 ## Requirements and verification
 
 Requires Rust, curl, yt-dlp, ffmpeg, ffprobe, and Python with yt-dlp's AES
-support (`python-pycryptodomex`). GTK 3 and WebKitGTK 4.1 development libraries
+support (`python-pycryptodomex`). Downloads also require yt-dlp Chrome
+impersonation support through `curl_cffi`; the app checks it before requesting
+an episode. For a pip installation, install `yt-dlp[default,curl-cffi]` in your
+Python environment. GTK 3 and WebKitGTK 4.1 development libraries
 are needed to build; a graphical desktop is needed only when a CAPTCHA opens
 WebKit. `fzf` is used for interactive selection. Playlist-only mode skips
 download-only dependencies.

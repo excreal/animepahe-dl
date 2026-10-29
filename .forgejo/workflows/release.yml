@@ -21,7 +21,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 env:
@@ -37,6 +37,8 @@ jobs:
         uses: https://github.com/actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Install build dependencies
         run: |
@@ -188,14 +190,11 @@ jobs:
               "${api}/releases/${id}/assets?name=$(basename "$file")" >/dev/null
           done
           sha="$(git rev-parse HEAD)"
-          if curl -fsS -H "$auth" "${api}/git/refs/tags/latest" >/dev/null 2>&1; then
-            payload="$(jq -n --arg sha "$sha" '{sha:$sha,force:true}')"
-            curl -fsS -X PATCH -H "$auth" -H 'Content-Type: application/json' \
-              --data "$payload" "${api}/git/refs/tags/latest" >/dev/null
-          else
-            payload="$(jq -n --arg sha "$sha" '{ref:"refs/tags/latest",sha:$sha}')"
-            curl -fsS -X POST -H "$auth" -H 'Content-Type: application/json' \
-              --data "$payload" "${api}/git/refs" >/dev/null
-          fi
+          # Git updates the ref atomically; a rejected push leaves the old tag intact.
+          git_auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+          GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0="http.${SERVER}/.extraheader" \
+            GIT_CONFIG_VALUE_0="Authorization: Basic ${git_auth}" \
+            git push --force origin HEAD:refs/tags/latest
           echo "Updated latest tag to ${TAG} (${sha})"
           echo "Published ${TAG}: ${SERVER}/${REPO}/releases/tag/${TAG}"
