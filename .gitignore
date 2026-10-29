@@ -3,6 +3,7 @@
 /.session/
 /anime.list
 /config.json
+/config.json.migrated*
 /dist/
 /*/
 !/src/

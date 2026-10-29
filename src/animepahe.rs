@@ -527,6 +527,22 @@ fn check_dependencies(options: &Options) -> Result<(), Box<dyn std::error::Error
     }
     if !options.links_only {
         check_program("yt-dlp", &["--version"], &mut available, &mut missing);
+        if !Command::new("yt-dlp")
+            .args([
+                "--ignore-config",
+                "--impersonate",
+                "chrome",
+                "--list-impersonate-targets",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            missing.push(
+                "yt-dlp Chrome impersonation (install yt-dlp with curl_cffi support)".to_owned(),
+            );
+        }
         check_program("python3", &["--version"], &mut available, &mut missing);
         check_program("ffmpeg", &["-version"], &mut available, &mut missing);
         check_program("ffprobe", &["-version"], &mut available, &mut missing);

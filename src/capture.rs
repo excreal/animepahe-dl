@@ -25,18 +25,24 @@ pub struct Capture {
 
 impl Capture {
     pub fn new(persistent: bool) -> std::io::Result<Rc<Self>> {
-        let root = if persistent {
+        let dir = if persistent {
             let app_dir = super::session::app_config_dir()?;
             fs::create_dir_all(&app_dir)?;
             set_private_dir(&app_dir)?;
-            app_dir.join("captures")
+            let root = app_dir.join("captures");
+            fs::create_dir_all(&root)?;
+            set_private_dir(&root)?;
+            let dir = root.join(format!("{}-{}", now(), std::process::id()));
+            fs::create_dir_all(&dir)?;
+            set_private_dir(&dir)?;
+            dir
         } else {
-            std::env::temp_dir().join("animepahe-dl-captures")
+            gtk::glib::mkdtemp(std::env::temp_dir().join("animepahe-dl-capture-XXXXXX"))
+                .ok_or_else(|| {
+                    std::io::Error::other("Could not create a private temporary capture directory")
+                })?
         };
-        let dir = root.join(format!("{}-{}", now(), std::process::id()));
         fs::create_dir_all(dir.join("resources"))?;
-        set_private_dir(&root)?;
-        set_private_dir(&dir)?;
         let dir = fs::canonicalize(dir)?;
         Ok(Rc::new(Self {
             events: RefCell::new(File::create(dir.join("events.jsonl"))?),
@@ -267,4 +273,25 @@ fn set_private_dir(path: &std::path::Path) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn set_private_dir(_path: &std::path::Path) -> std::io::Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn temporary_captures_are_private_unique_and_removed_on_drop() {
+        let first = Capture::new(false).unwrap();
+        let second = Capture::new(false).unwrap();
+        assert_ne!(first.dir, second.dir);
+        assert_eq!(
+            fs::metadata(&first.dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let directory = first.dir.clone();
+        drop(first);
+        assert!(!directory.exists());
+        assert!(second.dir.exists());
+    }
 }

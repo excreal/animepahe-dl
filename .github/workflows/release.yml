@@ -30,6 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install build dependencies
         run: |
@@ -94,8 +95,9 @@ jobs:
           prerelease=()
           case "$VERSION" in *-*) prerelease=(--prerelease) ;; esac
           if ! gh release view "$TAG" >/dev/null 2>&1; then
+            notes="$(printf 'Automated release of %s.\n\nSee checksums.txt for SHA-256 sums.\n' "$TAG")"
             gh release create "$TAG" --title "$TAG" \
-              --notes "Automated release of ${TAG}.\n\nSee checksums.txt for SHA-256 sums." \
+              --notes "$notes" \
               "${prerelease[@]}"
           fi
           gh release upload "$TAG" dist/* --clobber

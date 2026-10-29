@@ -42,27 +42,39 @@ pub fn load_app_config() -> io::Result<Value> {
     let legacy_app_config = app_dir.join("config.json");
     let legacy_project_config = PathBuf::from("config.json");
     let defaults_text = include_str!("../config.default.toml");
+    let defaults = parse_toml_config(defaults_text)?;
+    let default_object = defaults
+        .as_object()
+        .ok_or_else(|| io::Error::other("embedded default config must be an object"))?;
+    let mut migrated_from = None;
     let mut config = if config_file.is_file() {
         parse_toml_config(&fs::read_to_string(&config_file)?)?
     } else if legacy_app_config.is_file() {
+        migrated_from = Some(legacy_app_config.clone());
         serde_json::from_slice(&fs::read(&legacy_app_config)?)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
-    } else if legacy_project_config.is_file() {
-        serde_json::from_slice(&fs::read(&legacy_project_config)?)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+    } else if let Some(value) = match fs::metadata(&legacy_project_config) {
+        Ok(metadata) if metadata.is_file() => Some(fs::read(&legacy_project_config)?),
+        Ok(_) => None,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    }
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .filter(|value| {
+            value.get("animepahe_host").is_some_and(Value::is_string)
+        })
+    {
+        migrated_from = Some(legacy_project_config.clone());
+        value
     } else {
         parse_toml_config(defaults_text)?
     };
-    let defaults = parse_toml_config(defaults_text)?;
     let config_object = config.as_object_mut().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "config must be a key/value object",
         )
     })?;
-    let default_object = defaults
-        .as_object()
-        .ok_or_else(|| io::Error::other("embedded default config must be an object"))?;
     let mut changed = !config_file.is_file();
     changed |= config_object.remove("ua").is_some();
     changed |= config_object.remove("cf").is_some();
@@ -75,14 +87,44 @@ pub fn load_app_config() -> io::Result<Value> {
     if changed {
         let rendered = render_toml_config(&config, defaults_text)?;
         private_write(&config_file, rendered.as_bytes())?;
-        if legacy_project_config.is_file() {
-            fs::remove_file(legacy_project_config)?;
-        }
-        if legacy_app_config.is_file() {
-            fs::remove_file(legacy_app_config)?;
+        if let Some(source) = migrated_from {
+            backup_legacy_config(&source)?;
         }
     }
     Ok(config)
+}
+
+// Reserve a private backup atomically so an existing backup is never overwritten.
+fn backup_legacy_config(source: &Path) -> io::Result<()> {
+    let mut original = File::open(source)?;
+    for index in 0_u64.. {
+        let mut name = source.as_os_str().to_owned();
+        name.push(if index == 0 {
+            ".migrated".to_owned()
+        } else {
+            format!(".migrated.{index}")
+        });
+        let backup_path = PathBuf::from(name);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&backup_path)
+        {
+            Ok(mut backup) => {
+                if let Err(error) = io::copy(&mut original, &mut backup)
+                    .and_then(|_| backup.sync_all())
+                {
+                    let _ = fs::remove_file(&backup_path);
+                    return Err(error);
+                }
+                return fs::remove_file(source);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!()
 }
 
 fn parse_toml_config(text: &str) -> io::Result<Value> {
@@ -131,7 +173,11 @@ fn migrate_legacy_state(app_dir: &Path, session_dir: &Path) -> io::Result<()> {
     fs::create_dir_all(app_dir)?;
     fs::set_permissions(app_dir, fs::Permissions::from_mode(0o700))?;
     let legacy_session = PathBuf::from(".session");
-    if legacy_session.is_dir() && !session_dir.exists() {
+    let has_cookie_jar = fs::read_to_string(legacy_session.join("cookies.txt"))
+        .is_ok_and(|text| text.lines().any(|line| line == "# Netscape HTTP Cookie File"));
+    let has_session_files = legacy_session.join("cookies.txt").is_file()
+        && legacy_session.join("user-agent.txt").is_file();
+    if (has_cookie_jar || has_session_files) && !session_dir.exists() {
         match fs::rename(&legacy_session, session_dir) {
             Ok(()) => {}
             Err(_) => copy_session_dir(&legacy_session, session_dir)?,
