@@ -82,3 +82,64 @@ fn cli_fetches_and_reuses_session_without_a_browser() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn cli_refreshes_stale_catalogue_and_rejects_unavailable_requested_audio() {
+    let root = std::env::temp_dir().join(format!("animepahe-refresh-audio-{}", std::process::id()));
+    fs::create_dir_all(root.join("config/animepahe-dl")).unwrap();
+    fs::write(root.join("anime.list"), "[old-session] Old Series\n").unwrap();
+    fs::write(
+        root.join("config/animepahe-dl/config.toml"),
+        "audio_language = 'jpn'\nconcurrent_fragments = 1_6\n",
+    )
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        for body in [
+            r#"<a href="/anime/new-session" title="New Series">New Series</a>"#,
+            r#"{"last_page":1,"data":[{"episode":1,"session":"episode-one"}]}"#,
+            r#"<button data-src="https://kwik.cx/e/japanese" data-resolution="720" data-audio="jpn" class="active"></button>"#,
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut data = [0; 16384];
+            let size = stream.read(&mut data).unwrap();
+            requests.push(String::from_utf8_lossy(&data[..size]).into_owned());
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+        requests
+    });
+    let result = Command::new(env!("CARGO_BIN_EXE_animepahe-dl"))
+        .current_dir(&root)
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("ANIMEPAHE_HOST", format!("http://{address}"))
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .args(["-s", "new-session", "-e", "1", "-o", "eng", "-l"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(!result.status.success());
+    assert!(
+        stderr.contains("No Kwik source found for episode 1 with audio language eng"),
+        "{stderr}"
+    );
+    let requests = server.join().unwrap();
+    assert!(requests[0].starts_with("GET /anime "));
+    assert!(requests[1].contains("id=new-session"));
+    assert!(requests[2].starts_with("GET /play/new-session/episode-one "));
+    assert_eq!(
+        fs::read_to_string(root.join("anime.list")).unwrap(),
+        "[new-session] New Series\n"
+    );
+    fs::remove_dir_all(root).unwrap();
+}

@@ -378,20 +378,15 @@ pub fn run(
             })
             .collect();
         choose_search_result(&choices)?
+    } else if let Some(slug) = options.slug.as_deref() {
+        find_anime_by_slug(&mut network, &host, &anime_list, slug)?
     } else {
         let choices = if anime_list.exists() {
             read_catalogue(&anime_list)?
         } else {
             fetch_catalogue(&mut network, &host, &anime_list)?
         };
-        if let Some(slug) = options.slug.as_deref() {
-            choices
-                .into_iter()
-                .find(|item| item.0 == slug)
-                .ok_or("Anime slug not found in anime.list")?
-        } else {
-            choose_anime(&choices)?
-        }
+        choose_anime(&choices)?
     };
     let anime_name = safe_name(&catalogue.1);
     let output_root = config["output_directory"].as_str().unwrap_or(".");
@@ -419,7 +414,12 @@ pub fn run(
             requested_quality,
             requested_language,
         )
-        .ok_or_else(|| format!("No Kwik source found for episode {episode}"))?;
+        .ok_or_else(|| {
+            format!(
+                "No Kwik source found for episode {episode} with audio language {}",
+                requested_language.unwrap_or("any")
+            )
+        })?;
         let quality = if selected_height > 0 {
             format!("{selected_height}p")
         } else {
@@ -607,6 +607,26 @@ fn fetch_catalogue(
             .as_bytes(),
     )?;
     Ok(choices)
+}
+
+fn find_anime_by_slug(
+    network: &mut Network<'_>,
+    host: &str,
+    path: &Path,
+    slug: &str,
+) -> Result<(String, String), Box<dyn std::error::Error>> {
+    if path.exists() {
+        if let Some(entry) = read_catalogue(path)?
+            .into_iter()
+            .find(|item| item.0 == slug)
+        {
+            return Ok(entry);
+        }
+    }
+    fetch_catalogue(network, host, path)?
+        .into_iter()
+        .find(|item| item.0 == slug)
+        .ok_or_else(|| format!("Anime slug {slug} not found in the current catalogue").into())
 }
 
 fn read_catalogue(path: &Path) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
@@ -891,10 +911,7 @@ fn choose_source(
             .max_by_key(|source| source.1)
             .map(|source| (source.0.clone(), source.1))
     };
-    filtered(requested_height, requested_audio)
-        .or_else(|| filtered(None, requested_audio))
-        .or_else(|| filtered(requested_height, None))
-        .or_else(|| filtered(None, None))
+    filtered(requested_height, requested_audio).or_else(|| filtered(None, requested_audio))
 }
 
 fn resolve_playlist(
@@ -923,7 +940,6 @@ fn resolve_playlist(
 }
 
 fn find_playlist(bytes: &[u8]) -> Option<String> {
-    let value: Value = serde_json::from_slice(bytes).unwrap_or(Value::Null);
     fn strings(value: &Value, out: &mut Vec<String>) {
         match value {
             Value::String(text) => out.push(text.clone()),
@@ -940,27 +956,29 @@ fn find_playlist(bytes: &[u8]) -> Option<String> {
             _ => {}
         }
     }
-    let mut candidates = vec![String::from_utf8_lossy(bytes).into_owned()];
-    strings(&value, &mut candidates);
+    let mut candidates = Vec::new();
+    match serde_json::from_slice::<Value>(bytes) {
+        Ok(value) => strings(&value, &mut candidates),
+        Err(_) => candidates.push(String::from_utf8_lossy(bytes).into_owned()),
+    }
     for text in candidates {
         let mut offset = 0;
         while let Some(start) = text[offset..].find("https://") {
             let absolute = offset + start;
             let remaining = &text[absolute..];
-            if let Some(extension_end) = remaining.find(".m3u8").map(|end| end + ".m3u8".len()) {
-                let url_end = remaining[extension_end..]
-                    .find([
-                        '"', '\'', '<', '>', '\\', ' ', '\n', '\r', '\t', ')', ']', '}',
-                    ])
-                    .map_or(remaining.len(), |end| extension_end + end);
-                let value = &remaining[..url_end];
-                if value.starts_with("https://") {
-                    return Some(value.to_owned());
-                }
-                offset = absolute + extension_end;
-            } else {
-                break;
+            let url_end = remaining
+                .find(|character: char| {
+                    character.is_whitespace()
+                        || matches!(character, '"' | '\'' | '<' | '>' | '\\' | ')' | ']' | '}')
+                })
+                .unwrap_or(remaining.len());
+            let candidate = &remaining[..url_end];
+            if Url::parse(candidate)
+                .is_ok_and(|url| url.host_str().is_some() && url.path().ends_with(".m3u8"))
+            {
+                return Some(candidate.to_owned());
             }
+            offset = absolute + url_end;
         }
     }
     None
@@ -1434,5 +1452,53 @@ mod tests {
         }
         let play = "https://example.org/play/anime/episode?source=eng";
         assert_eq!(challenge_browser_url(play).unwrap().as_str(), play);
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    #[test]
+    fn playlist_url_stops_at_prior_url_boundary() {
+        let response = json!({"stdout":"player https://kwik.cx/e/example; source https://cdn.example.test/video.m3u8?token=required"});
+        assert_eq!(
+            find_playlist(&serde_json::to_vec(&response).unwrap()).as_deref(),
+            Some("https://cdn.example.test/video.m3u8?token=required")
+        );
+    }
+    #[test]
+    fn playlist_json_escapes_do_not_truncate_token() {
+        let response =
+            br#"{"stdout":"https://cdn.example.test/video.m3u8?token=abc\u0026expires=9999"}"#;
+        assert_eq!(
+            find_playlist(response).as_deref(),
+            Some("https://cdn.example.test/video.m3u8?token=abc&expires=9999")
+        );
+    }
+    #[test]
+    fn explicit_unavailable_audio_does_not_select_other_language() {
+        let html = r#"<button data-src="https://kwik.cx/e/japanese" data-resolution="720" data-audio="jpn" class="active"></button>"#;
+        assert_eq!(choose_source(html, Some("720"), Some("eng")), None);
+    }
+    #[test]
+    fn playlist_extraction_ignores_extensions_outside_url_paths() {
+        assert_eq!(find_playlist(br#"https://example.test/page?next=.m3u8 https://cdn.example.test/video.m3u8?token=ok"#).as_deref(), Some("https://cdn.example.test/video.m3u8?token=ok"));
+        assert_eq!(
+            find_playlist(br#"{"stdout":"nothing","stderr":"https://example.test/page"}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn source_selection_keeps_original_audio_and_quality_fallback() {
+        let html = r#"<button data-src="https://kwik.cx/e/japanese" data-resolution="720" data-audio="jpn" class="active"></button><button data-src="https://kwik.cx/e/english" data-resolution="1080" data-audio="eng"></button>"#;
+        assert_eq!(
+            choose_source(html, Some("best"), Some("original")),
+            Some(("https://kwik.cx/e/japanese".into(), 720))
+        );
+        assert_eq!(
+            choose_source(html, Some("720"), Some("en")),
+            Some(("https://kwik.cx/e/english".into(), 1080))
+        );
     }
 }

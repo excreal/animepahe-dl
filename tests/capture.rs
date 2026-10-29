@@ -10,5 +10,6 @@ fn main() {
     }
     app::tests::captures_page_and_exits_without_shutdown_panic();
     app::tests::closes_browser_after_json_response();
-    println!("Capture, JSON completion, and shutdown regressions passed.");
+    app::tests::saves_redirect_destination_cookies();
+    println!("Capture, JSON completion, redirect cookies, and shutdown regressions passed.");
 }
