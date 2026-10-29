@@ -9,17 +9,19 @@ Running the program without arguments prints help and makes no network request.
 
 ## Usage
 
+Build the release executable with `cargo build --release`, then run it:
+
 ```sh
-cargo run -- animepahe --help
+animepahe-dl --help
 
 # Search by title and download selected episodes.
-cargo run -- animepahe -a "Anime title" -e '1,3-5' -r 1080 -o eng
+animepahe-dl -a "Anime title" -e '1,3-5' -r 1080 -o eng
 
 # Select a series by its AnimePahe session ID; list episodes only.
-cargo run -- animepahe -s anime-session-id -e '*' -l
+animepahe-dl -s anime-session-id -e '*' -l
 
 # Replace an existing episode file.
-cargo run -- animepahe -s anime-session-id -e 1 --force
+animepahe-dl -s anime-session-id -e 1 --force
 ```
 
 Existing episode files are skipped unless `--force` is used. Use `--capture`

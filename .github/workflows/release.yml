@@ -95,3 +95,12 @@ jobs:
               "${prerelease[@]}"
           fi
           gh release upload "$TAG" dist/* --clobber
+          sha="$(git rev-parse HEAD)"
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/latest" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/latest" \
+              -F "sha=${sha}" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref=refs/tags/latest -f "sha=${sha}" >/dev/null
+          fi
+          echo "Updated latest tag to ${TAG} (${sha})"

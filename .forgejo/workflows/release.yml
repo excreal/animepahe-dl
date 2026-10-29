@@ -183,4 +183,15 @@ jobs:
             curl -fsS -X POST -H "$auth" -F "attachment=@${file}" \
               "${api}/releases/${id}/assets?name=$(basename "$file")" >/dev/null
           done
+          sha="$(git rev-parse HEAD)"
+          if curl -fsS -H "$auth" "${api}/git/refs/tags/latest" >/dev/null 2>&1; then
+            payload="$(jq -n --arg sha "$sha" '{sha:$sha,force:true}')"
+            curl -fsS -X PATCH -H "$auth" -H 'Content-Type: application/json' \
+              --data "$payload" "${api}/git/refs/tags/latest" >/dev/null
+          else
+            payload="$(jq -n --arg sha "$sha" '{ref:"refs/tags/latest",sha:$sha}')"
+            curl -fsS -X POST -H "$auth" -H 'Content-Type: application/json' \
+              --data "$payload" "${api}/git/refs" >/dev/null
+          fi
+          echo "Updated latest tag to ${TAG} (${sha})"
           echo "Published ${TAG}: ${SERVER}/${REPO}/releases/tag/${TAG}"
