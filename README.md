@@ -76,9 +76,11 @@ precedence; transfer settings into it if it already exists. Migrated JSON is
 backed up next to its source as `config.json.migrated` (with a numeric suffix
 if that name exists).
 
-Project-local `.session/` is migrated when it contains a Netscape `cookies.txt`
-jar or both `cookies.txt` and `user-agent.txt`. Missing user-agent files are
-recreated. Session files have restricted permissions and are excluded from Git.
+Project-local `.session/` is migrated only if the destination session directory
+does not already exist. The source must contain a Netscape `cookies.txt` jar or
+both `cookies.txt` and `user-agent.txt`. An existing destination is neither merged
+nor replaced. Missing user-agent files are recreated. Session files have
+restricted permissions and are excluded from Git.
 
 AnimePahe API and page requests use the saved cookies and user agent. When a
 challenge is detected, WebKit opens for manual completion; the app saves updated
