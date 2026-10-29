@@ -234,11 +234,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("Saved session works over HTTP; future runs will try it first.")
         }
         Ok(_) => {
-            http::save_browser_details(&capture)?;
-            println!("The HTTP client was not granted the destination page. Browser page details and session are saved; future runs will retry HTTP once before opening a challenge.");
+            if capture_enabled {
+                http::save_browser_details(&capture)?;
+                println!("The HTTP client was not granted the destination page. Browser page details and session are saved; future runs will retry HTTP once before opening a challenge.");
+            } else {
+                println!("The HTTP client was not granted the destination page. The browser session is saved; future runs will retry HTTP once before opening a challenge. Use --capture to save browser details.");
+            }
         }
         Err(error) => {
-            http::save_browser_details(&capture)?;
+            if capture_enabled {
+                http::save_browser_details(&capture)?;
+            }
             eprintln!("Browser succeeded, but HTTP reuse could not be checked: {error}");
         }
     }
@@ -275,6 +281,7 @@ pub(crate) fn run_browser(
     window.set_default_size(960, 680);
     window.set_position(gtk::WindowPosition::Center);
     window.unmaximize();
+    capture.begin_browser();
     let webview = session.browser()?;
     capture.attach(&webview);
     let ready_checks = Rc::new(Cell::new(0));
@@ -500,6 +507,7 @@ pub mod tests {
         let finishing = Rc::new(Cell::new(false));
         let session = session::Session::open(&capture.dir.join("fixture-session")).unwrap();
         session::private_write(&session.dir.join("cookies.txt"),b"# Netscape HTTP Cookie File\n#HttpOnly_127.0.0.1\tFALSE\t/\tFALSE\t0\trestored_browser\tyes\n").unwrap();
+        capture.begin_browser();
         let view = session.browser().unwrap();
         capture.attach(&view);
         let load_loop = main_loop.clone();
@@ -515,7 +523,10 @@ pub mod tests {
         main_loop.run();
         assert_eq!(capture.pending.get(), 0);
         assert!(capture.dir.join("page.mhtml").exists());
-        assert!(capture.dir.join("cookies.json").exists());
+        assert!(std::fs::read_dir(&capture.dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().starts_with("cookies-")));
         let snapshot = std::fs::read_dir(&capture.dir)
             .unwrap()
             .filter_map(Result::ok)

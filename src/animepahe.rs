@@ -737,21 +737,23 @@ fn select_episodes(
     source: &Value,
     expression: Option<&str>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let available: std::collections::BTreeSet<u64> = source["data"]
+    let mut available: Vec<(f64, String)> = source["data"]
         .as_array()
         .ok_or("No episode data")?
         .iter()
-        .filter_map(|e| {
-            e["episode"]
-                .as_u64()
-                .or_else(|| e["episode"].as_str()?.parse().ok())
-        })
+        .filter_map(|episode| episode_number(&episode["episode"]))
         .collect();
+    available.sort_by(|left, right| {
+        left.0
+            .total_cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    available.dedup_by(|left, right| left.0 == right.0);
     if available.is_empty() {
         return Err("No episodes are available".into());
     }
     let Some(expression) = expression else {
-        for episode in &available {
+        for (_, episode) in &available {
             eprintln!("Episode {episode}");
         }
         eprint!("Which episode(s) to download: ");
@@ -760,27 +762,36 @@ fn select_episodes(
         io::stdin().read_line(&mut answer)?;
         return select_episodes(source, Some(answer.trim()));
     };
-    let mut selected = std::collections::BTreeSet::new();
+    let mut selected: Vec<(f64, String)> = Vec::new();
     for item in expression
         .split(',')
         .map(str::trim)
         .filter(|part| !part.is_empty())
     {
         if item == "*" {
-            selected.extend(available.iter().copied());
+            selected.extend(available.iter().cloned());
             continue;
         }
         if let Some((start, end)) = item.split_once('-') {
-            let start: u64 = start.parse()?;
-            let end: u64 = end.parse()?;
-            if start > end {
+            let start: f64 = start.parse()?;
+            let end: f64 = end.parse()?;
+            if !start.is_finite() || !end.is_finite() || start < 0.0 || start > end {
                 return Err(format!("Invalid episode range: {item}").into());
             }
-            selected.extend(available.range(start..=end).copied());
+            selected.extend(
+                available
+                    .iter()
+                    .filter(|(number, _)| *number >= start && *number <= end)
+                    .cloned(),
+            );
         } else {
-            let episode: u64 = item.parse()?;
-            if available.contains(&episode) {
-                selected.insert(episode);
+            let episode: f64 = item.parse()?;
+            if !episode.is_finite() || episode < 0.0 {
+                return Err(format!("Invalid episode number: {item}").into());
+            }
+            if let Some(available_episode) = available.iter().find(|(number, _)| *number == episode)
+            {
+                selected.push(available_episode.clone());
             } else {
                 eprintln!("Episode {episode} not found; skipping.");
             }
@@ -789,21 +800,29 @@ fn select_episodes(
     if selected.is_empty() {
         return Err("No requested episodes are available".into());
     }
-    Ok(selected.into_iter().map(|n| n.to_string()).collect())
+    selected.sort_by(|left, right| left.0.total_cmp(&right.0));
+    selected.dedup_by(|left, right| left.0 == right.0);
+    Ok(selected.into_iter().map(|(_, episode)| episode).collect())
+}
+
+fn episode_number(value: &Value) -> Option<(f64, String)> {
+    let (number, identifier) = if let Some(number) = value.as_number() {
+        (number.as_f64()?, number.to_string())
+    } else {
+        let identifier = value.as_str()?.trim().to_owned();
+        (identifier.parse().ok()?, identifier)
+    };
+    number.is_finite().then_some((number, identifier))
 }
 
 fn episode_page_for(source: &Value, episode: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let requested = episode.parse::<f64>().ok();
     source["data"]
         .as_array()
         .ok_or("No episode data")?
         .iter()
         .find(|row| {
-            row["episode"]
-                .as_u64()
-                .map(|n| n.to_string())
-                .or_else(|| row["episode"].as_str().map(str::to_owned))
-                .as_deref()
-                == Some(episode)
+            episode_number(&row["episode"]).is_some_and(|(number, _)| Some(number) == requested)
         })
         .and_then(|row| row["session"].as_str())
         .map(str::to_owned)
@@ -928,14 +947,17 @@ fn find_playlist(bytes: &[u8]) -> Option<String> {
         while let Some(start) = text[offset..].find("https://") {
             let absolute = offset + start;
             let remaining = &text[absolute..];
-            if let Some(end) = remaining.find(".m3u8") {
-                let end = end + 6;
-                let value = remaining[..end]
-                    .trim_matches(|c: char| !c.is_ascii_alphanumeric() && !":/?&=._%-".contains(c));
+            if let Some(extension_end) = remaining.find(".m3u8").map(|end| end + ".m3u8".len()) {
+                let url_end = remaining[extension_end..]
+                    .find([
+                        '"', '\'', '<', '>', '\\', ' ', '\n', '\r', '\t', ')', ']', '}',
+                    ])
+                    .map_or(remaining.len(), |end| extension_end + end);
+                let value = &remaining[..url_end];
                 if value.starts_with("https://") {
                     return Some(value.to_owned());
                 }
-                offset = absolute + end;
+                offset = absolute + extension_end;
             } else {
                 break;
             }
@@ -1369,7 +1391,36 @@ fn challenge_browser_url(request_url: &str) -> Result<Url, url::ParseError> {
 
 #[cfg(test)]
 mod tests {
-    use super::challenge_browser_url;
+    use super::{challenge_browser_url, episode_page_for, find_playlist, select_episodes};
+    use serde_json::json;
+
+    #[test]
+    fn playlist_extraction_preserves_query_parameters() {
+        let response = json!({"stdout":"https://cdn.example.test/video.m3u8?token=required&expires=9999999999"});
+        assert_eq!(
+            find_playlist(&serde_json::to_vec(&response).unwrap()).as_deref(),
+            Some("https://cdn.example.test/video.m3u8?token=required&expires=9999999999")
+        );
+    }
+
+    #[test]
+    fn fractional_episodes_are_selectable_and_sorted_numerically() {
+        let source = json!({"data":[
+            {"episode":2,"session":"two"},
+            {"episode":1.5,"session":"one-half"},
+            {"episode":1,"session":"one"}
+        ]});
+        assert_eq!(
+            select_episodes(&source, Some("*")).unwrap(),
+            vec!["1", "1.5", "2"]
+        );
+        assert_eq!(select_episodes(&source, Some("1.5")).unwrap(), vec!["1.5"]);
+        assert_eq!(
+            select_episodes(&source, Some("1.5-2")).unwrap(),
+            vec!["1.5", "2"]
+        );
+        assert_eq!(episode_page_for(&source, "1.5").unwrap(), "one-half");
+    }
 
     #[test]
     fn api_challenges_use_the_same_origin_homepage() {

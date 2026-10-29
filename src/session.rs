@@ -249,10 +249,55 @@ impl Session {
 
     pub fn save_capture_cookies(&self, capture: &Path) -> io::Result<()> {
         let mut cookies = BTreeMap::new();
-        let scopes: Vec<_> = fs::read_to_string(capture.join("events.jsonl"))?
+        let all_events: Vec<Value> = fs::read_to_string(capture.join("events.jsonl"))?
             .lines()
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .collect();
+        let mut cookie_events: Vec<Value> = all_events
+            .iter()
             .filter(|event| event["event"] == "cookies")
+            .cloned()
+            .collect();
+        let current_generation = all_events
+            .iter()
+            .filter(|event| event["event"] == "browser_start")
+            .filter_map(|event| event["data"]["browser_generation"].as_u64())
+            .max();
+        let current_generation = current_generation.or_else(|| {
+            cookie_events
+                .iter()
+                .filter_map(|event| event["data"]["browser_generation"].as_u64())
+                .max()
+        });
+        let mut legacy_cookie_file = false;
+        if let Some(generation) = current_generation {
+            cookie_events
+                .retain(|event| event["data"]["browser_generation"].as_u64() == Some(generation));
+        } else if cookie_events.is_empty() {
+            // Older imported captures only have cookies.json and no cookie events.
+            legacy_cookie_file = capture.join("cookies.json").exists();
+        } else {
+            // Legacy captures reused cookies.json and left numbered snapshots behind.
+            // Only import the current contents of that file, never historical numbered files.
+            cookie_events.retain(|event| {
+                event["data"]["file"].as_str().unwrap_or("cookies.json") == "cookies.json"
+            });
+            legacy_cookie_file = cookie_events.is_empty() && capture.join("cookies.json").exists();
+        }
+        cookie_events.sort_by(|left, right| {
+            left["data"]["index"]
+                .as_u64()
+                .unwrap_or(0)
+                .cmp(&right["data"]["index"].as_u64().unwrap_or(0))
+                .then_with(|| {
+                    left["data"]["file"]
+                        .as_str()
+                        .unwrap_or("cookies.json")
+                        .cmp(right["data"]["file"].as_str().unwrap_or("cookies.json"))
+                })
+        });
+        let scopes: Vec<_> = cookie_events
+            .iter()
             .filter_map(|event| {
                 event["data"]["uri"]
                     .as_str()
@@ -282,19 +327,28 @@ impl Session {
             let value = json!({"domain":cookie.domain,"path":cookie.path,"name":cookie.name,"value":cookie.value,"secure":cookie.secure,"http_only":cookie.http_only,"expires_unix":cookie.expires});
             cookies.insert((cookie.domain, cookie.path, cookie.name), value);
         }
-        for entry in fs::read_dir(capture)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name == "cookies.json" || (name.starts_with("cookies-") && name.ends_with(".json")) {
-                let values: Vec<Value> = serde_json::from_slice(&fs::read(entry.path())?)?;
-                for value in values {
-                    let key = (
-                        value["domain"].as_str().unwrap_or("").to_owned(),
-                        value["path"].as_str().unwrap_or("/").to_owned(),
-                        value["name"].as_str().unwrap_or("").to_owned(),
-                    );
-                    cookies.insert(key, value);
-                }
+        let cookie_files: Vec<String> = if legacy_cookie_file {
+            vec!["cookies.json".to_owned()]
+        } else {
+            cookie_events
+                .iter()
+                .map(|event| {
+                    event["data"]["file"]
+                        .as_str()
+                        .unwrap_or("cookies.json")
+                        .to_owned()
+                })
+                .collect()
+        };
+        for name in cookie_files {
+            let values: Vec<Value> = serde_json::from_slice(&fs::read(capture.join(name))?)?;
+            for value in values {
+                let key = (
+                    value["domain"].as_str().unwrap_or("").to_owned(),
+                    value["path"].as_str().unwrap_or("/").to_owned(),
+                    value["name"].as_str().unwrap_or("").to_owned(),
+                );
+                cookies.insert(key, value);
             }
         }
         let mut jar = String::from("# Netscape HTTP Cookie File\n# Saved by animepahe-dl, including session and HTTP-only cookies\n");
@@ -484,6 +538,53 @@ mod tests {
         drop(session);
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn imports_only_latest_browser_cookie_batch_in_stable_order() {
+        let root =
+            std::env::temp_dir().join(format!("webkit-cookie-batches-{}", std::process::id()));
+        let capture = root.join("capture");
+        fs::create_dir_all(&capture).unwrap();
+        let session = Session::open(&root.join("session")).unwrap();
+
+        let stale = json!([{"domain":"first.test","path":"/","name":"stale","value":"old"}]);
+        let current_first =
+            json!([{"domain":"first.test","path":"/","name":"winner","value":"first"}]);
+        let current_last =
+            json!([{"domain":"first.test","path":"/","name":"winner","value":"last"}]);
+        fs::write(capture.join("cookies-1-0.json"), stale.to_string()).unwrap();
+        fs::write(capture.join("cookies-2-0.json"), current_first.to_string()).unwrap();
+        fs::write(capture.join("cookies-2-1.json"), current_last.to_string()).unwrap();
+        let events = [
+            json!({"event":"cookies","data":{"uri":"https://first.test/","file":"cookies-1-0.json","browser_generation":1,"index":0}}),
+            json!({"event":"cookies","data":{"uri":"https://first.test/","file":"cookies-2-1.json","browser_generation":2,"index":1}}),
+            json!({"event":"cookies","data":{"uri":"https://first.test/","file":"cookies-2-0.json","browser_generation":2,"index":0}}),
+        ];
+        fs::write(
+            capture.join("events.jsonl"),
+            events
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+
+        session.save_capture_cookies(&capture).unwrap();
+        let cookies = read_jar(&session.dir.join("cookies.txt")).unwrap();
+        assert!(!cookies.iter().any(|cookie| cookie.name == "stale"));
+        assert_eq!(
+            cookies
+                .iter()
+                .find(|cookie| cookie.name == "winner")
+                .unwrap()
+                .value,
+            "last"
+        );
+        drop(session);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn imports_session_cookies_user_agent_and_expiry() {
         let root = std::env::temp_dir().join(format!("webkit-session-test-{}", std::process::id()));

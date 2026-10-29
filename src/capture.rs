@@ -18,6 +18,7 @@ pub struct Capture {
     persistent: bool,
     events: RefCell<File>,
     sequence: Cell<u64>,
+    browser_generation: Cell<u64>,
     pub pending: Cell<usize>,
     cookie_uris: RefCell<BTreeSet<String>>,
 }
@@ -42,6 +43,7 @@ impl Capture {
             dir,
             persistent,
             sequence: Cell::new(0),
+            browser_generation: Cell::new(0),
             pending: Cell::new(0),
             cookie_uris: RefCell::new(BTreeSet::new()),
         }))
@@ -55,6 +57,13 @@ impl Capture {
         let id = self.sequence.get() + 1;
         self.sequence.set(id);
         id
+    }
+
+    pub fn begin_browser(&self) {
+        self.cookie_uris.borrow_mut().clear();
+        let generation = self.id();
+        self.browser_generation.set(generation);
+        self.event("browser_start", json!({"browser_generation":generation}));
     }
 
     pub fn event(&self, kind: &str, data: Value) {
@@ -182,6 +191,7 @@ impl Capture {
     }
 
     pub fn finalize(self: &Rc<Self>, view: &WebView) {
+        let browser_generation = self.browser_generation.get();
         if self.persistent {
             self.snapshot(view, "final");
             self.pending.set(self.pending.get() + 1);
@@ -209,9 +219,9 @@ impl Capture {
                 match result {
                     Ok(cookies) => {
                         let cookies: Vec<_> = cookies.into_iter().map(|mut c| json!({"name":c.name().map(|s|s.to_string()), "value":c.value().map(|s|s.to_string()), "domain":c.domain().map(|s|s.to_string()), "path":c.path().map(|s|s.to_string()), "http_only":c.is_http_only(), "secure":c.is_secure(), "expires_unix":c.expires().map(|date|date.to_unix())})).collect();
-                        let file = if index == 0 {"cookies.json".to_owned()} else {format!("cookies-{}.json", capture.id())};
+                let file = format!("cookies-{browser_generation}-{index}.json");
                         capture.write(&file, json!(cookies).to_string().as_bytes());
-                        capture.event("cookies", json!({"uri":callback_uri, "file":file}));
+                        capture.event("cookies", json!({"uri":callback_uri, "file":file, "browser_generation":browser_generation, "index":index}));
                     }
                     Err(error) => capture.event("cookie_error", json!({"error":error.to_string()})),
                 }

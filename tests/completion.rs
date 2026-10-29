@@ -20,10 +20,10 @@ fn distinguishes_challenges_from_destination_content() {
         ("<title>Just a moment...</title><p style='display:none'>Verification successful. Waiting for kwik.cx to respond</p>", false),
         ("<title>example.mp4 :: Kwik</title><div id='app'><form method='POST' action='/d/example'><button>Download</button></form></div><iframe src='about:blank' style='visibility:hidden'></iframe>", true),
         ("<title>File</title><input name='cf-turnstile-response' value='manually-solved'><video></video>", true),
-        ("<title>iDrama</title><h1>Latest episodes</h1><a href='/series'>Browse</a>", true),
-        ("<title>iDrama</title><div class='g-recaptcha'>Verify</div>", false),
-        ("<title>iDrama</title><div class='g-recaptcha'>Verified</div><textarea name='g-recaptcha-response'>manually-solved</textarea>", true),
-        ("<title>iDrama</title><div class='h-captcha' style='display:none'>Inactive</div>", true),
+        ("<title>AnimePahe</title><h1>Latest episodes</h1><a href='/anime'>Browse</a>", true),
+        ("<title>AnimePahe</title><div class='g-recaptcha'>Verify</div>", false),
+        ("<title>AnimePahe</title><div class='g-recaptcha'>Verified</div><textarea name='g-recaptcha-response'>manually-solved</textarea>", true),
+        ("<title>AnimePahe</title><div class='h-captcha' style='display:none'>Inactive</div>", true),
     ];
 
     for (html, expected) in fixtures {
@@ -51,7 +51,7 @@ fn distinguishes_challenges_from_destination_content() {
             gtk::main_quit();
             gtk::glib::ControlFlow::Continue
         });
-        view.load_html(html, Some("https://idrama.dramafren.org/"));
+        view.load_html(html, Some("https://animepahe.ru/"));
         window.show_all();
         gtk::main();
         timeout.remove();

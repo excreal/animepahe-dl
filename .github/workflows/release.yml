@@ -54,17 +54,21 @@ jobs:
             echo "Invalid release version: $version" >&2
             exit 1
           }
-          manifest_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
-          test "$version" = "$manifest_version" || {
-            echo "Tag version $version does not match Cargo.toml version $manifest_version" >&2
-            exit 1
-          }
           git rev-parse --verify "refs/tags/${tag}^{commit}" >/dev/null || git fetch origin "refs/tags/${tag}:refs/tags/${tag}"
           echo "TAG=$tag" >> "$GITHUB_ENV"
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Check out release tag
         run: git checkout --detach "refs/tags/${TAG}"
+
+      - name: Verify release manifest
+        run: |
+          set -eu
+          manifest_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test "$VERSION" = "$manifest_version" || {
+            echo "Tag version $VERSION does not match Cargo.toml version $manifest_version" >&2
+            exit 1
+          }
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

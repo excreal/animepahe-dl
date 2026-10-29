@@ -237,24 +237,24 @@ pub(crate) fn inspect(url: &str, status: u16, headers: &[(String, String)], body
 mod tests {
     use super::*;
     #[test]
-    fn parses_another_site_without_domain_or_file_page_rules() {
+    fn parses_animepahe_page_details() {
         let page = inspect(
-            "https://idrama.dramafren.org/",
+            "https://animepahe.ru/",
             200,
             &[],
-            r#"<title>iDrama</title><meta name="description" content="Drama catalogue"><h1>Latest episodes</h1><a href="/series/example">A series</a><p><strong>Category</strong>: Drama</p>"#,
+            r#"<title>AnimePahe</title><meta name="description" content="Anime catalogue"><h1>Latest episodes</h1><a href="/series/example">A series</a><p><strong>Category</strong>: Anime</p>"#,
         );
         assert!(!page.challenge);
         assert_eq!(page.details["state"], "fetched");
         assert_eq!(
             page.details["links"][0]["url"],
-            "https://idrama.dramafren.org/series/example"
+            "https://animepahe.ru/series/example"
         );
-        assert_eq!(page.details["metadata"][0]["content"], "Drama catalogue");
-        assert_eq!(page.details["labelled_details"]["category"], "Drama");
+        assert_eq!(page.details["metadata"][0]["content"], "Anime catalogue");
+        assert_eq!(page.details["labelled_details"]["category"], "Anime");
         assert!(
             inspect(
-                "https://idrama.dramafren.org/",
+                "https://animepahe.ru/",
                 403,
                 &[("cf-mitigated".into(), "challenge".into())],
                 "<title>Just a moment...</title>"
@@ -263,10 +263,10 @@ mod tests {
         );
         assert!(
             !inspect(
-                "https://idrama.dramafren.org/",
+                "https://animepahe.ru/",
                 200,
                 &[],
-                "<title>iDrama</title><div class='h-captcha' hidden></div>"
+                "<title>AnimePahe</title><div class='h-captcha' hidden></div>"
             )
             .challenge
         );
