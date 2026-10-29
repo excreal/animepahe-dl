@@ -7,9 +7,30 @@ it, saves the refreshed session, and retries the request.
 
 Running the program without arguments prints help and makes no network request.
 
+## Build and install
+
+Install Rust and the native build dependencies listed under
+[Requirements](#requirements-and-verification), then run from the repository
+root:
+
+```sh
+cargo build --release
+```
+
+To make `animepahe-dl` available as a command on your `PATH`, install it with:
+
+```sh
+cargo install --path .
+```
+
+Tagged releases are built and published automatically by the GitHub Actions and
+Forgejo Actions release workflows. Push a `v*` version tag to trigger a release;
+the workflows publish the Linux x86_64 archive and checksums. The `latest` tag
+tracks the most recently released version on both forges.
+
 ## Usage
 
-Build the release executable with `cargo build --release`, then run it:
+After installing, run the executable:
 
 ```sh
 animepahe-dl --help
